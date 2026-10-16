@@ -2,9 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, viewport-fit=cover">
 <title>TimeBox</title>
-<meta name="theme-color" content="#1a2744">
+<meta name="theme-color" id="themeColor" content="#1a2744">
+<meta name="robots" content="noindex, nofollow">
+<script>try{var t=localStorage.getItem("tb2_theme")||"auto";if(t==="dark"||(t==="auto"&&matchMedia("(prefers-color-scheme: dark)").matches))document.documentElement.dataset.theme="dark";}catch(e){}</script>
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -15,7 +17,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:wght@300;400;500&family=IBM+Plex+Mono:wght@300;400&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="styles.css?v=2.1.2">
 </head>
 <body>
 <div class="app" id="app">
@@ -40,7 +42,7 @@
   <button class="tab active" data-tab="day"><span class="tab-ico">◷</span><span class="tab-lbl">Schedule</span></button>
   <button class="tab" data-tab="week"><span class="tab-ico">▦</span><span class="tab-lbl">Week</span></button>
   <button class="tab" data-tab="plan"><span class="tab-ico">☰</span><span class="tab-lbl">Planning</span></button>
-  <button class="tab" data-tab="cases"><span class="tab-ico">❏</span><span class="tab-lbl">Cases</span></button>
+  <button class="tab" data-tab="cases"><span class="tab-ico">❏</span><span class="tab-lbl">Reading</span></button>
   <button class="tab" data-tab="jobs"><span class="tab-ico">◆</span><span class="tab-lbl">Jobs</span></button>
   <button class="tab" data-tab="review"><span class="tab-ico">✓</span><span class="tab-lbl">Review</span><span class="tab-badge" id="reviewBadge" hidden>!</span></button>
 </nav>
@@ -156,6 +158,15 @@
       </div>
     </div>
 
+    <div class="plan-card wide" id="checklistCard">
+      <div class="plan-card-header">
+        <div class="plan-card-title">Weekly Checklist</div>
+        <div class="plan-card-subtitle" id="clWeekLbl"></div>
+        <button class="link-btn" style="margin-left:auto" data-act="cl-edit" id="clEditBtn">Edit list</button>
+      </div>
+      <div class="plan-card-body" id="checklistBody"></div>
+    </div>
+
     <div class="plan-card wide">
       <div class="plan-card-header">
         <div class="plan-card-title">Braindump</div>
@@ -182,6 +193,15 @@
         <div id="allocBars"></div>
       </div>
     </div>
+
+    <div class="plan-card wide">
+      <div class="plan-card-header">
+        <div class="plan-card-title">Library</div>
+        <div class="plan-card-subtitle">Pinned materials — CV, cheat sheets, story bank</div>
+        <button class="link-btn" style="margin-left:auto" data-act="lib-edit" id="libEditBtn">Edit</button>
+      </div>
+      <div class="plan-card-body" id="libraryBody"></div>
+    </div>
   </div>
 </section>
 
@@ -190,8 +210,8 @@
   <div class="list-inner">
     <div class="list-header">
       <div>
-        <div class="list-title">Case Studies</div>
-        <div class="list-sub">Reading list — sources, status and key takeaways</div>
+        <div class="list-title">Reading List</div>
+        <div class="list-sub">Cases, reports and articles — status and key takeaways</div>
       </div>
       <button class="primary-btn" data-act="new-case">+ Add</button>
     </div>
@@ -253,6 +273,13 @@
         <div class="review-stats" id="reviewStats"></div>
         <div class="carry-label">Priorities</div>
         <div class="carry-list" id="reviewPriorities"></div>
+      </div>
+    </div>
+    <div class="review-section">
+      <div class="review-section-header"><div class="review-section-title">How did the blocks go?</div></div>
+      <div class="review-section-body">
+        <div class="carry-label">Mark each block · ✓ done · ½ partly · ✕ skipped</div>
+        <div class="rb-list" id="reviewBlocks"></div>
       </div>
     </div>
     <div class="review-section">
@@ -333,10 +360,10 @@
 
 <div class="modal-overlay" id="caseModal">
   <div class="modal">
-    <div class="modal-title" id="caseModalTitle">Add Case Study</div>
-    <div class="field"><label>Title</label><input class="input-full" id="cTitle" placeholder="e.g. McKinsey — Reviving a Retail Brand"></div>
-    <div class="field"><label>Source</label><input class="input-full" id="cSource" placeholder="McKinsey, HBR, Deloitte, Oliver Wyman…"></div>
-    <div class="field"><label>Topic / Industry</label><input class="input-full" id="cTopic" placeholder="FP&amp;A, Retail, Cost Reduction…"></div>
+    <div class="modal-title" id="caseModalTitle">Add to Reading List</div>
+    <div class="field"><label>Title</label><input class="input-full" id="cTitle" placeholder="e.g. Reviving a Retail Brand"></div>
+    <div class="field"><label>Source</label><input class="input-full" id="cSource" placeholder="Publisher, firm or author"></div>
+    <div class="field"><label>Topic / Industry</label><input class="input-full" id="cTopic" placeholder="Function, industry or theme"></div>
     <div class="field"><label>Status</label>
       <select class="input-full" id="cStatus"><option value="to-read">To Read</option><option value="in-progress">In Progress</option><option value="done">Done</option></select>
     </div>
@@ -352,8 +379,10 @@
 <div class="modal-overlay" id="jobModal">
   <div class="modal">
     <div class="modal-title" id="jobModalTitle">Add Role</div>
-    <div class="field"><label>Company</label><input class="input-full" id="jCompany" placeholder="KPMG, Bain, Schneider Electric…"></div>
-    <div class="field"><label>Role / title</label><input class="input-full" id="jRole" placeholder="Senior FP&amp;A Analyst"></div>
+    <div class="field"><label>Company</label><input class="input-full" id="jCompany" placeholder="Company name"></div>
+    <div class="field"><label>Role / title</label><input class="input-full" id="jRole" placeholder="e.g. Senior Analyst"></div>
+    <div class="field"><label>Posting link</label><input class="input-full" id="jUrl" placeholder="https://…" inputmode="url"></div>
+    <div class="field"><label>Source</label><input class="input-full" id="jSource" placeholder="e.g. LinkedIn, referral, company site, Job Scout"></div>
     <div class="field"><label>Status</label>
       <select class="input-full" id="jStatus"><option value="to-apply">To Apply</option><option value="applied">Applied</option><option value="interview">Interview</option><option value="offer">Offer</option><option value="rejected">Rejected</option></select>
     </div>
@@ -363,8 +392,9 @@
       <div class="field-hint">Shows in your Schedule and Week view. Goes to your main Google calendar in Stage 3.</div>
     </div>
     <div class="field"><label>Follow up on</label><input class="input-full" id="jFollow" type="date"></div>
-    <div class="field"><label>Next action</label><input class="input-full" id="jNext" placeholder="Send follow-up email, prep case interview…"></div>
-    <div class="field"><label>Notes</label><textarea class="input-full" id="jNotes" rows="3" placeholder="Contacts, salary range, culture notes…"></textarea></div>
+    <div class="field"><label>Next action</label><input class="input-full" id="jNext" placeholder="e.g. Send follow-up email"></div>
+    <div class="field"><label>Materials</label><textarea class="input-full" id="jLinks" rows="2" placeholder="Links to the CV you sent, cheat sheet, STAR story… one per line (optional: Label | link)"></textarea></div>
+    <div class="field"><label>Notes</label><textarea class="input-full" id="jNotes" rows="3" placeholder="Contacts, culture notes, anything useful…"></textarea></div>
     <div class="modal-row">
       <button class="modal-cancel" data-close>Cancel</button>
       <button class="modal-confirm" data-act="confirm-job">Save</button>
@@ -400,6 +430,15 @@
       <button class="modal-cancel" id="undoImportBtn" data-act="undo-import" hidden style="margin-top:8px;width:100%"></button>
     </div>
     <div class="settings-group">
+      <div class="settings-label">Appearance (this device)</div>
+      <div class="seg seg-wide" id="themeSeg">
+        <button class="seg-btn" data-theme-set="auto">Auto</button>
+        <button class="seg-btn" data-theme-set="light">Light</button>
+        <button class="seg-btn" data-theme-set="dark">Dark</button>
+      </div>
+      <div class="field-hint">Auto follows your iPhone or computer setting.</div>
+    </div>
+    <div class="settings-group">
       <div class="settings-label">Storage</div>
       <div class="settings-info" id="storageInfo"></div>
     </div>
@@ -417,6 +456,6 @@
 
 <div class="toast" id="toast"><span id="toastMsg"></span><button id="toastAction" hidden></button></div>
 
-<script src="app.js"></script>
+<script src="app.js?v=2.1.2"></script>
 </body>
 </html>

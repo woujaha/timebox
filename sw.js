@@ -1,6 +1,6 @@
 /* TimeBox service worker — makes the app open instantly and work offline.
    Your data is NOT stored here; it lives in the app's own storage. Bump VERSION when you deploy changes. */
-const VERSION = 'tb-2.0.0-s1';
+const VERSION = 'tb-2.1.2-s2';
 const SHELL = ['./', './index.html', './styles.css', './app.js', './manifest.webmanifest',
   './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
 
@@ -26,7 +26,8 @@ self.addEventListener('fetch', e => {
   }
   if(url.origin !== location.origin) return;
   // App files: network first (so updates arrive), fall back to cache when offline
-  e.respondWith(fetch(req).then(r => {
+  // revalidate with the server so a new index.html never meets an old app.js from the browser cache
+  e.respondWith(fetch(req.url, {cache:'no-cache', credentials:'same-origin'}).then(r => {
     if(r.ok){ const copy = r.clone(); caches.open(VERSION).then(c => c.put(req, copy)); }
     return r;
   }).catch(() => caches.match(req, {ignoreSearch:true}).then(hit => hit || caches.match('./index.html'))));

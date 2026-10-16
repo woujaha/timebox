@@ -4,7 +4,7 @@
    and push to Google Calendar without another migration. */
 'use strict';
 
-const APP_VERSION = '2.0.0 · Stage 1';
+const APP_VERSION = '2.1.2 · Stage 2';
 const STORE_KEY = 'tb2_state';
 const SNAP_KEY = 'tb2_snapshot';
 
@@ -27,6 +27,64 @@ const CAL_OPTS = [
   ['timebox','TimeBox calendar'],
   ['none',"Don't sync"],
 ];
+// lighter text tones for dark mode
+const DK = {deep:'#86aaff',create:'#b39dfa',case:'#e98af5',admin:'#5fd98a',meet:'#fb9a5a',break:'#f88a8a',learn:'#f2cf4a',jobs:'#3fd6c2',personal:'#addb55',read:'#f58ac0'};
+const hexA = (h,a) => { const n = parseInt(h.slice(1),16); return `rgba(${n>>16},${(n>>8)&255},${n&255},${a})`; };
+const isDark = () => document.documentElement.dataset.theme === 'dark';
+function catStyle(c){ return isDark() ? {fg:DK[c.id] || c.color, bg:hexA(c.color,.2)} : {fg:c.color, bg:c.bg}; }
+const darkMq = window.matchMedia('(prefers-color-scheme: dark)');
+function themePref(){ try { return localStorage.getItem('tb2_theme') || 'auto'; } catch(e){ return 'auto'; } }
+function applyTheme(){
+  const p = themePref();
+  const dark = p === 'dark' || (p === 'auto' && darkMq.matches);
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  const m = document.getElementById('themeColor'); if(m) m.content = dark ? '#101626' : '#1a2744';
+  document.querySelectorAll('[data-theme-set]').forEach(b => b.classList.toggle('active', b.dataset.themeSet === p));
+}
+// Weekly Action Checklist from the Career Suite's Job Search Plan
+const CL_DEFAULT = [
+  ['Clarity','Written down my one non-negotiable for next role','Job Search Plan · Phase 1'],
+  ['Clarity','Reviewed my target company list against that filter','Job Search Plan · Phase 1'],
+  ['Clarity','Identified my complement skill for each target','Job Search Plan · Phase 2'],
+  ['Clarity',"Removed any company that doesn't fit my filter",'Job Search Plan · Phase 1'],
+  ['Pipeline','Reached out to 2–3 people in my network this week','Job Search Plan · Phase 3'],
+  ['Pipeline','Responded to at least one recruiter (even if not interested)','Job Search Plan · Phase 3'],
+  ['Pipeline','Sent one cold outreach with a genuine insight or build','Job Search Plan · Phase 3'],
+  ['Pipeline','Maintained one relationship with no agenda attached','Job Search Plan · Phase 3'],
+  ['Interview Ready',"Studied one target company's actual product problem",'Job Search Plan · Phase 4'],
+  ['Interview Ready','Practiced one story in the Interview Coach','Career Suite · Interview Coach'],
+  ['Interview Ready','Built or deepened one demonstration piece','Job Search Plan · Phase 5'],
+  ['Interview Ready','Can articulate my complement skill in under 60 seconds','Job Search Plan · Phase 2'],
+];
+const defaultChecklist = () => ({items:CL_DEFAULT.map(([g,t,w], i) => ({id:'cl' + (i+1), group:g, text:t, where:w})), weeks:{}});
+const STATUS_LBL = {done:'Done', partial:'Partly', skipped:'Skipped'};
+const doneMin = b => b.status === 'done' ? b.endMin - b.startMin : b.status === 'partial' ? (b.endMin - b.startMin) / 2 : 0;
+
+// ── links ("Label | url", one per line) ──
+function parseLinks(text){
+  let dropped = 0;
+  const out = String(text || '').split('\n').map(l => l.trim()).filter(Boolean).map(l => {
+    let label = '', url = l; const i = l.lastIndexOf('|');
+    if(i > 0){ label = l.slice(0, i).trim(); url = l.slice(i+1).trim(); }
+    if(!/^https?:\/\/\S+$/i.test(url)){ dropped++; return null; }
+    return {label, url};
+  }).filter(Boolean);
+  if(dropped) toast(`Ignored ${dropped} line(s) without a link (must start with https://)`);
+  return out;
+}
+const linksText = links => (links || []).map(x => x.label ? `${x.label} | ${x.url}` : x.url).join('\n');
+function linkLabel(l){
+  if(l.label) return l.label;
+  try {
+    const u = new URL(l.url);
+    const seg = decodeURIComponent(u.pathname.split('/').filter(Boolean).pop() || '');
+    if(seg && /github\.com$/.test(u.hostname)) return seg.replace(/\.(md|pdf|html?|docx?|xlsx?|pptx?|indd|png|jpe?g)$/i, '');
+    return seg && seg.length < 48 && !/^\d+$/.test(seg) ? seg : u.hostname.replace(/^www\./, '');
+  } catch(e){ return l.url; }
+}
+const linkChips = links => !links || !links.length ? '' :
+  `<div class="links">${links.map(l => `<a class="link-chip${/github\.com/.test(l.url) ? ' gh' : ''}" href="${esc(l.url)}" target="_blank" rel="noopener">${esc(linkLabel(l))}</a>`).join('')}</div>`;
+
 const PCOLS = ['#006b96','#5b4b8a','#2e7d5e','#1a2744','#7a5c40','#7a5c00','#8a3030','#3a6a8a'];
 const CASE_STATUSES = {
   'to-read':{label:'To Read',cls:'status-to-read'},
@@ -84,6 +142,7 @@ function blankState(){
     version:2, createdAt:now(), updatedAt:now(),
     days:{}, braindump:[], projects:[], cases:[], jobs:[],
     templates:{}, weeklyGoals:{}, streak:{count:0,lastDate:null},
+    checklist:defaultChecklist(), library:[],
     tombstones:{}, settings:{}, meta:{imports:[]}
   };
 }
@@ -93,9 +152,12 @@ function normalize(s){
   for(const k of Object.keys(s.days)){
     const d = s.days[k];
     d.blocks = d.blocks || []; d.priorities = d.priorities || []; d.note = d.note || ''; d.review = d.review || null;
-    d.blocks.forEach(x => { x.cal = x.cal || 'auto'; if(x.gcal === undefined) x.gcal = null; });
+    d.blocks.forEach(x => { x.cal = x.cal || 'auto'; if(x.gcal === undefined) x.gcal = null; if(x.status === undefined) x.status = null; });
   }
-  s.jobs.forEach(j => { if(j.interviewDur === undefined) j.interviewDur = 60; });
+  s.jobs.forEach(j => { if(j.interviewDur === undefined) j.interviewDur = 60; j.links = j.links || []; j.postingUrl = j.postingUrl || ''; j.source = j.source || ''; });
+  s.projects.forEach(p => { p.links = p.links || []; });
+  s.checklist.items = s.checklist.items || defaultChecklist().items; s.checklist.weeks = s.checklist.weeks || {};
+  s.meta = s.meta || {imports:[]};
   s.version = 2;
   return s;
 }
@@ -109,6 +171,19 @@ const stamp = o => { o.updatedAt = now(); return o; };
 const tomb = id => { S.tombstones[id] = now(); };
 
 let S = loadState();
+function seedOnce(){
+  if(S.meta.seededPlan) return;
+  S.meta.seededPlan = true;
+  if(!S.projects.some(p => p.name === 'Job Search Plan')){
+    S.projects.unshift(stamp({id:uid(), name:'Job Search Plan', color:'#2e7d5e', open:true, links:[], tasks:[
+      {id:uid(), text:'Write my one-sentence non-negotiable for the next role', done:false},
+      {id:uid(), text:'Build a precision target list of 10–20 companies against that filter', done:false},
+      {id:uid(), text:'Identify the complement skill I bring to each target', done:false},
+      {id:uid(), text:'Finalise my positioning sentence and say it in under 60 seconds', done:false},
+    ]}));
+  }
+  commit();
+}
 function loadState(){
   try { const raw = localStorage.getItem(STORE_KEY); if(raw) return normalize(JSON.parse(raw)); }
   catch(e){ console.error('Could not read saved state', e); }
@@ -281,7 +356,7 @@ function renderCats(){
   CATS.forEach(c => {
     const d = document.createElement('button');
     d.className = 'category-item' + (c.id === activeCat ? ' active' : '');
-    d.style.color = c.color;
+    d.style.color = catStyle(c).fg;
     d.innerHTML = `<span class="cat-bar" style="background:${c.color}"></span><span class="cat-label">${c.label}</span>`;
     d.onclick = () => { activeCat = c.id; renderCats(); };
     el.appendChild(d);
@@ -370,8 +445,8 @@ function renderBlocks(){
     const pos = `top:${mToY(s - MIN_M)}px;height:${Math.max(mToY(e - s) - 1, 14)}px;left:calc(${w*it._lane}% + 1px);width:calc(${w}% - 2px)`;
     if(it.kind === 'iv'){
       const c = cat('jobs');
-      el.className = 'time-block ext';
-      el.style.cssText = `${pos};background-color:${c.bg};border-left-color:${c.color};color:${c.color}`;
+      el.className = 'time-block ext'; const cs = catStyle(c);
+      el.style.cssText = `${pos};background-color:${cs.bg};border-left-color:${c.color};color:${cs.fg}`;
       el.innerHTML = `<div class="block-title">Interview · ${esc(it.iv.job.company)}</div><div class="block-time">${toTS(it.startMin)} – ${toTS(it.endMin)}</div>`;
       el.title = 'Interview from Job Search — tap to edit the role';
       el.addEventListener('click', () => openJobModal(it.iv.job.id));
@@ -379,16 +454,16 @@ function renderBlocks(){
       return;
     }
     const b = it.b, c = cat(b.category);
-    el.className = 'time-block' + (b.id === selId ? ' selected' : '');
-    el.dataset.id = b.id;
-    el.style.cssText = `${pos};background:${c.bg};border-left-color:${c.color};color:${c.color}`;
+    el.className = 'time-block' + (b.id === selId ? ' selected' : '') + (b.status ? ' st-' + b.status : '') + (b.sprint ? ' sprint' : '');
+    el.dataset.id = b.id; const cs = catStyle(c);
+    el.style.cssText = `${pos};background:${cs.bg};border-left-color:${c.color};color:${cs.fg}`;
     const linked = dayRO(curKey).priorities.some(p => p.blockId === b.id);
     const short = (e - s) < 30;
     el.innerHTML = `<div class="block-title">${esc(b.title)}${short ? ` <span class="block-time">${toTS(b.startMin)}</span>` : ''}</div>
       ${short ? '' : `<div class="block-time">${toTS(b.startMin)} – ${toTS(b.endMin)}</div>`}
       ${linked ? '<span class="block-flag">★</span>' : ''}${calTarget(b) === 'main' ? '<span class="block-flag" style="right:'+(linked?18:6)+'px">◉</span>' : ''}
       <div class="block-resize"></div>`;
-    el.title = `${c.label} · ${CAL_LABEL[calTarget(b)]}`;
+    el.title = `${c.label} · ${CAL_LABEL[calTarget(b)]}${b.status ? ' · ' + STATUS_LBL[b.status] : ''}${b.sprint ? ' · focus sprint' : ''}`;
     attachBlockGestures(el, b);
     layer.appendChild(el);
   });
@@ -542,12 +617,12 @@ function setupGridCreate(){
 // ════════════════════════════════════════════
 // BLOCK CRUD
 // ════════════════════════════════════════════
-function openBlockModal({dateKey=curKey, sMin, eMin, title='', link=null}={}){
+function openBlockModal({dateKey=curKey, sMin, eMin, title='', link=null, cat:catId=null}={}){
   if(sMin === undefined){
     const base = dateKey === todayKey() ? Math.ceil(nowMin()/30)*30 : 9*60;
     sMin = clamp(base, MIN_M, MAX_M - 60); eMin = sMin + 60;
   }
-  blockDraft = {dateKey, link, cat:activeCat, cal:'auto'};
+  blockDraft = {dateKey, link, cat:catId || activeCat, cal:'auto'};
   $('blockModalTitle').textContent = link ? 'Schedule it' : 'New time block';
   $('nbTitle').value = title;
   $('nbDate').value = dateKey;
@@ -576,11 +651,13 @@ function confirmBlock(){
   if(!t){ toast('End time must be after start time'); return; }
   const dk = $('nbDate').value || blockDraft.dateKey;
   const b = stamp({id:uid(), title:$('nbTitle').value.trim() || 'Untitled', notes:$('nbNotes').value.trim(),
-    category:blockDraft.cat, cal:blockDraft.cal, gcal:null, startMin:t.s, endMin:t.e});
+    category:blockDraft.cat, cal:blockDraft.cal, gcal:null, status:null, links:[], startMin:t.s, endMin:t.e});
   dayOf(S, dk).blocks.push(b);
   const link = blockDraft.link;
   if(link && link.type === 'priority'){
     const p = findPriority(link.id); if(p){ p.p.blockId = b.id; stamp(p.p); }
+  } else if(link && link.type === 'checklist'){
+    // nothing to link back; the checklist tick stays manual
   } else if(link && link.type === 'task'){
     const pr = S.projects.find(x => x.id === link.projectId); const tk = pr && pr.tasks.find(x => x.id === link.id);
     if(tk){ tk.blockId = b.id; stamp(pr); }
@@ -609,7 +686,7 @@ function duplicateBlock(id){
   const f = findBlock(id); if(!f) return;
   const {b, k} = f; const dur = b.endMin - b.startMin;
   const s = clamp(b.endMin, MIN_M, MAX_M - dur);
-  const nb = stamp({...clone(b), id:uid(), gcal:null, startMin:s, endMin:s + dur});
+  const nb = stamp({...clone(b), id:uid(), gcal:null, status:null, sprint:false, startMin:s, endMin:s + dur});
   S.days[k].blocks.push(nb); commit(); selectBlock(nb.id, false); toast('Duplicated');
 }
 
@@ -619,11 +696,11 @@ function buildCatChips(container, current, onPick){
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'cat-chip' + (c.id === current ? ' sel' : '');
-    b.style.color = c.id === current ? c.color : '';
+    b.style.color = c.id === current ? catStyle(c).fg : '';
     b.innerHTML = `<i style="background:${c.color}"></i>${c.label}`;
     b.onclick = () => {
       container.querySelectorAll('.cat-chip').forEach(x => { x.classList.remove('sel'); x.style.color = ''; });
-      b.classList.add('sel'); b.style.color = c.color; onPick(c.id);
+      b.classList.add('sel'); b.style.color = catStyle(c).fg; onPick(c.id);
     };
     container.appendChild(b);
   });
@@ -658,9 +735,14 @@ function renderEditor(){
       <div class="nudge-group"><button data-n="move-15" aria-label="Earlier">−</button><span>Move</span><button data-n="move+15" aria-label="Later">+</button></div>
       <div class="nudge-group"><button data-n="len-15" aria-label="Shorter">−</button><span>Length</span><button data-n="len+15" aria-label="Longer">+</button></div>
     </div>
+    <div class="field"><label>How did it go?</label></div>
+    <div class="status-seg" id="eStatus">
+      <button data-st="done" class="${b.status === 'done' ? 'on' : ''}">✓ Done</button><button data-st="partial" class="pt ${b.status === 'partial' ? 'on' : ''}">½ Partly</button><button data-st="skipped" class="sk ${b.status === 'skipped' ? 'on' : ''}">✕ Skipped</button>
+    </div>
     <div class="field"><label>Category</label><div class="cat-chips" id="eCats"></div></div>
     <div class="field"><label>Google Calendar</label><select class="input-full" id="eCal"></select><div class="field-hint" id="eCalHint"></div></div>
     <div class="field"><label>Notes</label><textarea class="input-full" id="eNotes" rows="3">${esc(b.notes || '')}</textarea></div>
+    <div class="field"><label>Materials</label><div id="eLinkChips">${linkChips(b.links)}</div><textarea class="input-full" id="eLinks" rows="2" placeholder="Links, one per line (optional: Label | link)" style="margin-top:4px">${esc(linksText(b.links))}</textarea></div>
     <div class="editor-actions">
       <button class="sec-btn" id="eDup">Duplicate</button>
       <button class="del-btn" id="eDel">Delete</button>
@@ -671,6 +753,8 @@ function renderEditor(){
   $('eCal').onchange = e => { b.cal = e.target.value; stamp(b); commit(); renderBlocks(); calHint(); };
   $('eTitle').oninput = e => { b.title = e.target.value || 'Untitled'; stamp(b); commit(); const t = document.querySelector(`.time-block[data-id="${b.id}"] .block-title`); if(t && t.firstChild) t.firstChild.textContent = b.title; };
   $('eNotes').oninput = e => { b.notes = e.target.value; stamp(b); commit(); };
+  $('eLinks').onchange = e => { b.links = parseLinks(e.target.value); stamp(b); commit(); $('eLinkChips').innerHTML = linkChips(b.links); };
+  panel.querySelectorAll('#eStatus [data-st]').forEach(btn => btn.onclick = () => { setBlockStatus(b, btn.dataset.st); renderEditor(); });
   const onTime = () => {
     const t = readTimes($('eStart'), $('eEnd'));
     if(!t){ toast('End time must be after start time'); return; }
@@ -680,6 +764,11 @@ function renderEditor(){
   panel.querySelectorAll('[data-n]').forEach(btn => btn.onclick = () => { nudge(b, btn.dataset.n); });
   $('eDup').onclick = () => duplicateBlock(b.id);
   $('eDel').onclick = () => deleteBlock(b.id);
+}
+function setBlockStatus(b, st){
+  b.status = b.status === st ? null : st; stamp(b); commit();
+  if(view === 'day') renderBlocks();
+  renderStats();
 }
 function nudge(b, how){
   const dur = b.endMin - b.startMin;
@@ -701,8 +790,8 @@ function renderStats(){
   const alive = st.lastDate === todayKey() || st.lastDate === yKey;
   const count = alive ? st.count : 0;
   $('statsGrid').innerHTML = `
-    <div class="stat-card"><div class="stat-num">${d.blocks.length}</div><div class="stat-lbl">Blocks</div></div>
     <div class="stat-card"><div class="stat-num">${hrs(total)}h</div><div class="stat-lbl">Planned</div></div>
+    <div class="stat-card"><div class="stat-num">${hrs(d.blocks.reduce((s,b) => s + doneMin(b), 0))}h</div><div class="stat-lbl">Done</div></div>
     <div class="stat-card"><div class="stat-num">${hrs(deep)}h</div><div class="stat-lbl">Deep work</div></div>
     <div class="stat-card"><div class="stat-num">${pDone}/${d.priorities.length}</div><div class="stat-lbl">Priorities</div></div>
     <div class="stat-card wide"><div class="stat-num">${count > 0 ? '🔥 ' + count : '—'}</div><div class="stat-lbl">Day streak${count > 0 && st.lastDate !== todayKey() ? ' · finish a priority today to keep it' : ''}</div></div>`;
@@ -723,8 +812,9 @@ function tick(){
   if(sprint){
     const rem = sprint.end - Date.now();
     if(rem <= 0){
-      sprint = null; saveSprint();
-      toast('Sprint complete ✓ — take a short break');
+      const sp = sprint; sprint = null; saveSprint();
+      const logged = logSprint(sp, sp.end);
+      toast(logged ? 'Sprint complete ✓ — logged on your schedule' : 'Sprint complete ✓');
       if(navigator.vibrate) navigator.vibrate([80,60,80]);
     } else {
       name = sprint.label; sub = Math.round(sprint.total/60000) + '-min focus sprint';
@@ -756,8 +846,26 @@ function tick(){
   }
 }
 function saveSprint(){ try { sprint ? localStorage.setItem('tb2_sprint', JSON.stringify(sprint)) : localStorage.removeItem('tb2_sprint'); } catch(e){} }
+function logSprint(sp, endTs){
+  const startTs = sp.end - sp.total;
+  const mins = Math.round((Math.min(endTs, sp.end) - startTs) / 60000);
+  if(mins < 5) return false;
+  const st = new Date(startTs); const k = dkey(st);
+  const s = st.getHours()*60 + st.getMinutes(); const e = Math.min(s + mins, 24*60);
+  dayOf(S, k).blocks.push(stamp({id:uid(), title:sp.label, notes:'Focus sprint', category:sp.cat || 'deep', cal:'auto', gcal:null, status:'done', sprint:true, links:[], startMin:s, endMin:e}));
+  commit();
+  if(view === 'day' && curKey === k) renderBlocks();
+  renderStats();
+  return true;
+}
+function stopSprint(){
+  if(!sprint) return;
+  const sp = sprint; sprint = null; saveSprint();
+  const logged = logSprint(sp, Date.now()); tick();
+  toast(logged ? 'Sprint stopped · logged on your schedule' : 'Sprint stopped (under 5 min, not logged)');
+}
 function startSprint(label, minutes=25){
-  sprint = {label: label || 'Focus sprint', end: Date.now() + minutes*60000, total: minutes*60000};
+  sprint = {label: label || 'Focus sprint', end: Date.now() + minutes*60000, total: minutes*60000, cat: activeCat};
   saveSprint(); tick(); toast(`Sprint started — ${minutes} min. Go.`);
 }
 function quickSprint(){
@@ -817,8 +925,9 @@ function renderWeek(){
       const el = document.createElement('div');
       const c = it.kind === 'iv' ? cat('jobs') : cat(it.b.category);
       const title = it.kind === 'iv' ? `Interview · ${it.iv.job.company}` : it.b.title;
-      el.className = 'week-block' + (it.kind === 'iv' ? ' ext' : '');
-      el.style.cssText = `top:${wy(s - MIN_M)}px;height:${Math.max(wy(e - s) - 1, 16)}px;left:calc(${w*it._lane}% + 2px);width:calc(${w}% - 4px);background:${c.bg};border-left-color:${c.color};color:${c.color}`;
+      el.className = 'week-block' + (it.kind === 'iv' ? ' ext' : '') + (it.kind === 'block' && it.b.status ? ' st-' + it.b.status : '');
+      const cs = catStyle(c);
+      el.style.cssText = `top:${wy(s - MIN_M)}px;height:${Math.max(wy(e - s) - 1, 16)}px;left:calc(${w*it._lane}% + 2px);width:calc(${w}% - 4px);background:${cs.bg};border-left-color:${c.color};color:${cs.fg}`;
       el.innerHTML = `<div class="week-block-title">${esc(title)}</div>${(e - s) >= 45 ? `<div class="week-block-time">${toTS(it.startMin)}</div>` : ''}`;
       el.title = `${title} · ${toTS(it.startMin)}–${toTS(it.endMin)}`;
       el.addEventListener('click', ev => {
@@ -865,7 +974,7 @@ function renderPlan(){
   const mon = mondayOf(curKey);
   $('focusWeekLbl').textContent = 'Week of ' + fmtDay(mon, {day:'numeric', month:'long'});
   const wg = $('weeklyGoal'); if(document.activeElement !== wg) wg.value = S.weeklyGoals[mon] || '';
-  renderPriorities(); renderProjects(); renderBraindump(); renderAlloc();
+  renderChecklist(); renderPriorities(); renderProjects(); renderBraindump(); renderAlloc(); renderLibrary();
 }
 // ── priorities (per day) ──
 function findPriority(id){
@@ -881,12 +990,12 @@ function renderPriorities(){
   list.forEach((p, i) => {
     const d = document.createElement('div'); d.className = 'priority-item' + (p.done ? ' done' : '');
     const tag = p.blockId && findBlock(p.blockId) ? `<span class="pitem-tag">${toTS(findBlock(p.blockId).b.startMin)}</span>` : (p.carried ? '<span class="pitem-tag">→ moved</span>' : '');
-    d.innerHTML = `<div class="pitem-rank">${pad(i+1)}</div>
-      <input class="pitem-text" value="${esc(p.text)}">
+    d.innerHTML = `<button class="check${p.done ? ' checked' : ''}" aria-label="Done"></button>
+      <textarea class="pitem-text" rows="1">${esc(p.text)}</textarea>
       ${tag}
-      <span class="row-tools"><button class="tool" data-x="sprint" title="Start a 25-min sprint on this">⚡</button><button class="tool" data-x="sched" title="Put it on the schedule">+ Schedule</button><button class="tool" data-x="up" title="Move up" ${i === 0 ? 'disabled' : ''}>↑</button><button class="tool del" data-x="del" aria-label="Delete">×</button></span>
-      <button class="check${p.done ? ' checked' : ''}" aria-label="Done"></button>`;
-    d.querySelector('.pitem-text').oninput = e => { p.text = e.target.value; stamp(p); commit(); };
+      <span class="row-tools"><button class="tool ico" data-x="sprint" title="Start a 25-min sprint on this" aria-label="Sprint">⚡</button><button class="tool ico" data-x="sched" title="Put it on the schedule" aria-label="Schedule">◷</button><button class="tool ico" data-x="up" title="Move up" aria-label="Move up" ${i === 0 ? 'disabled' : ''}>↑</button><button class="tool del" data-x="del" title="Delete" aria-label="Delete">×</button></span>
+      <button class="more-btn" aria-label="More">⋯</button>`;
+    autoGrow(d.querySelector('.pitem-text'), v => { p.text = v; stamp(p); commit(); });
     d.querySelector('[data-x=sprint]').onclick = () => startSprint(p.text, 25);
     d.querySelector('[data-x=sched]').onclick = () => openBlockModal({dateKey:curKey, title:p.text, link:{type:'priority', id:p.id}});
     d.querySelector('[data-x=up]').onclick = () => { if(i === 0) return; const arr = dayOf(S, curKey).priorities; [arr[i-1], arr[i]] = [arr[i], arr[i-1]]; stamp(p); commit(); renderPriorities(); };
@@ -926,6 +1035,16 @@ function addPriority(text){
   dayOf(S, curKey).priorities.push(stamp({id:uid(), text, done:false}));
   inp.value = ''; commit(); renderPriorities(); renderStats();
 }
+// single-line-feel text that wraps and grows instead of cutting long items off
+function autoGrow(ta, onChange){
+  const grow = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; };
+  ta.addEventListener('input', () => { onChange(ta.value.replace(/\n/g, ' ')); grow(); });
+  ta.addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); ta.blur(); } });
+  // the hover tools reserve space on the right, so re-measure when the pointer enters/leaves the row
+  const row = ta.closest('.priority-item,.task-item');
+  if(row){ ['mouseenter','mouseleave'].forEach(ev => row.addEventListener(ev, () => requestAnimationFrame(grow))); }
+  requestAnimationFrame(grow);
+}
 // ── braindump (global) ──
 function renderBraindump(){
   const el = $('braindumpList'); el.innerHTML = '';
@@ -933,10 +1052,12 @@ function renderBraindump(){
   S.braindump.forEach((item, i) => {
     const d = document.createElement('div'); d.className = 'bd-item';
     d.innerHTML = `<span class="bd-bullet">·</span><textarea class="bd-text" rows="1">${esc(item.text)}</textarea>
-      <span class="row-tools"><button class="tool" data-x="prio" title="Promote to today's priorities">★</button><button class="tool del" data-x="del" aria-label="Remove">×</button></span>`;
+      <button class="more-btn" aria-label="More">⋯</button>
+      <span class="row-tools"><button class="tool" data-x="prio" title="Promote to today's priorities">★ Priority</button><button class="tool del" data-x="del" aria-label="Remove">×</button></span>`;
     const ta = d.querySelector('.bd-text');
     const grow = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; };
     ta.oninput = () => { item.text = ta.value; stamp(item); commit(); grow(); };
+    ['mouseenter','mouseleave'].forEach(ev => d.addEventListener(ev, () => requestAnimationFrame(grow)));
     d.querySelector('[data-x=prio]').onclick = () => {
       S.braindump.splice(i, 1); tomb(item.id);
       dayOf(S, todayKey()).priorities.push(stamp({id:uid(), text:item.text, done:false}));
@@ -951,6 +1072,7 @@ function renderBraindump(){
   });
 }
 // ── projects ──
+const projLinkEdit = new Set();
 function renderProjects(){
   const el = $('projectList'); el.innerHTML = '';
   if(!S.projects.length) el.innerHTML = '<div class="empty-mini">No projects yet.</div>';
@@ -971,6 +1093,9 @@ function renderProjects(){
         <div class="project-bar-wrap"><div class="project-bar-fill" style="width:${pct}%;background:${p.color}"></div></div>
         <div class="project-tasks"></div>
         <div class="add-item-row"><input class="proj-add-input" placeholder="Add task…" enterkeyhint="done"><button class="add-item-btn" data-x="tadd" aria-label="Add task">+</button></div>
+        <div class="project-links-edit">${linkChips(p.links)}
+          ${projLinkEdit.has(p.id) ? `<textarea class="input-full" data-x="plinks" rows="3" placeholder="Links, one per line (optional: Label | link)" style="margin-top:6px">${esc(linksText(p.links))}</textarea><button class="link-btn" data-x="plinks-done" style="margin-top:4px">Done</button>`
+            : `<button class="link-btn" data-x="plinks-open" style="margin-top:4px">${p.links && p.links.length ? 'Edit materials' : '+ Add materials'}</button>`}</div>
       </div>` : ''}`;
     d.querySelector('.project-name').oninput = e => { p.name = e.target.value; stamp(p); commit(); };
     d.querySelector('.project-toggle').onclick = () => { p.open = !p.open; commit(); renderProjects(); };
@@ -990,11 +1115,12 @@ function renderProjects(){
         const row = document.createElement('div'); row.className = 'task-item';
         const sched = t.blockId && findBlock(t.blockId);
         row.innerHTML = `<button class="check${t.done ? ' checked' : ''}" aria-label="Done"></button>
-          <input class="task-text${t.done ? ' done-text' : ''}" value="${esc(t.text)}">
+          <textarea class="task-text${t.done ? ' done-text' : ''}" rows="1">${esc(t.text)}</textarea>
           ${sched ? `<span class="pitem-tag">${esc(fmtDay(sched.k, {day:'numeric', month:'short'}))} ${toTS(sched.b.startMin)}</span>` : ''}
+          <button class="more-btn" aria-label="More">⋯</button>
           <span class="row-tools"><button class="tool" data-x="tsched">+ Schedule</button><button class="tool del" data-x="tdel" aria-label="Delete task">×</button></span>`;
         row.querySelector('.check').onclick = () => { t.done = !t.done; stamp(p); commit(); renderProjects(); };
-        row.querySelector('.task-text').oninput = e => { t.text = e.target.value; stamp(p); commit(); };
+        autoGrow(row.querySelector('.task-text'), v => { t.text = v; stamp(p); commit(); });
         row.querySelector('[data-x=tsched]').onclick = () => openBlockModal({dateKey:curKey, title:`${t.text}`, link:{type:'task', id:t.id, projectId:p.id}});
         row.querySelector('[data-x=tdel]').onclick = () => {
           p.tasks.splice(ti, 1); stamp(p); commit(); renderProjects();
@@ -1006,18 +1132,21 @@ function renderProjects(){
       const add = () => { const v = inp.value.trim(); if(!v) return; p.tasks.push({id:uid(), text:v, done:false}); stamp(p); commit(); renderProjects(); setTimeout(() => { const ni = document.querySelectorAll('.proj-add-input')[pi]; if(ni) ni.focus(); }, 0); };
       inp.addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); add(); } });
       d.querySelector('[data-x=tadd]').onclick = add;
+      const po = d.querySelector('[data-x=plinks-open]'); if(po) po.onclick = () => { projLinkEdit.add(p.id); renderProjects(); };
+      const pd = d.querySelector('[data-x=plinks-done]');
+      if(pd) pd.onclick = () => { p.links = parseLinks(d.querySelector('[data-x=plinks]').value); stamp(p); commit(); projLinkEdit.delete(p.id); renderProjects(); };
     }
     el.appendChild(d);
   });
 }
 function addProject(){
   const inp = $('projectInput'); const name = inp.value.trim(); if(!name) return;
-  S.projects.push(stamp({id:uid(), name, color:PCOLS[S.projects.length % PCOLS.length], tasks:[], open:true}));
+  S.projects.push(stamp({id:uid(), name, color:PCOLS[S.projects.length % PCOLS.length], tasks:[], links:[], open:true}));
   inp.value = ''; commit(); renderProjects();
 }
 // ── time allocation ──
 function renderAlloc(){
-  document.querySelectorAll('.seg-btn').forEach(b => b.classList.toggle('active', b.dataset.range === statsRange));
+  document.querySelectorAll('.seg-btn[data-range]').forEach(b => b.classList.toggle('active', b.dataset.range === statsRange));
   let keys = [];
   if(statsRange === 'week'){
     const ws = mondayOf(curKey); for(let i = 0; i < 7; i++) keys.push(addDays(ws, i));
@@ -1027,14 +1156,122 @@ function renderAlloc(){
     while(d.getMonth() === m){ keys.push(dkey(d)); d.setDate(d.getDate()+1); }
     $('allocLbl').textContent = fromKey(curKey).toLocaleDateString('en-GB', {month:'long', year:'numeric'});
   }
-  const totals = {}; CATS.forEach(c => totals[c.id] = 0);
-  keys.forEach(k => dayRO(k).blocks.forEach(b => { if(totals[b.category] !== undefined) totals[b.category] += b.endMin - b.startMin; }));
-  const max = Math.max(1, ...Object.values(totals));
-  const grand = Object.values(totals).reduce((a,b) => a + b, 0);
-  const rows = CATS.filter(c => totals[c.id] > 0).sort((a,b) => totals[b.id] - totals[a.id]).map(c =>
-    `<div class="alloc-row"><div class="alloc-label">${c.label}</div><div class="alloc-track"><div class="alloc-fill" style="width:${totals[c.id]/max*100}%;background:${c.color}"></div></div><div class="alloc-hrs">${hrs(totals[c.id])}h · ${Math.round(totals[c.id]/grand*100)}%</div></div>`).join('');
-  $('allocBars').innerHTML = (rows || '<div class="empty-mini">No time planned in this period yet.</div>')
-    + `<div class="alloc-total"><span>Total planned</span><b>${hrs(grand)}h</b></div>`;
+  const plan = {}, done = {}; CATS.forEach(c => { plan[c.id] = 0; done[c.id] = 0; });
+  const tk = todayKey(), nm = nowMin(); let unmarked = 0;
+  keys.forEach(k => dayRO(k).blocks.forEach(b => {
+    if(plan[b.category] === undefined) return;
+    plan[b.category] += b.endMin - b.startMin; done[b.category] += doneMin(b);
+    if(!b.status && (k < tk || (k === tk && b.endMin <= nm))) unmarked += b.endMin - b.startMin;
+  }));
+  const max = Math.max(1, ...Object.values(plan), ...Object.values(done));
+  const gPlan = Object.values(plan).reduce((a,b) => a + b, 0), gDone = Object.values(done).reduce((a,b) => a + b, 0);
+  const rows = CATS.filter(c => plan[c.id] > 0).sort((a,b) => plan[b.id] - plan[a.id]).map(c =>
+    `<div class="alloc-row"><div class="alloc-label">${c.label}</div><div class="alloc-track"><div class="alloc-plan" style="width:${plan[c.id]/max*100}%;background:${c.color}"></div><div class="alloc-done" style="width:${done[c.id]/max*100}%;background:${c.color}"></div></div><div class="alloc-hrs">${hrs(done[c.id])} / ${hrs(plan[c.id])}h</div></div>`).join('');
+  $('allocBars').innerHTML = (rows ? '<div class="alloc-legend"><span><i></i>Done</span><span><i class="p"></i>Planned</span></div>' + rows : '<div class="empty-mini">No time planned in this period yet.</div>')
+    + `<div class="alloc-total"><span>Done of planned${unmarked ? ` · ${hrs(unmarked)}h past blocks not marked yet` : ''}</span><b>${hrs(gDone)} / ${hrs(gPlan)}h${gPlan ? ` · ${Math.round(gDone/gPlan*100)}%` : ''}</b></div>`;
+}
+
+// ── weekly checklist ──
+let clEditing = false;
+function renderChecklist(){
+  const mon = mondayOf(curKey);
+  $('clWeekLbl').textContent = 'Week of ' + fmtDay(mon, {day:'numeric', month:'long'}) + ' · resets every Monday';
+  $('clEditBtn').textContent = clEditing ? 'Done editing' : 'Edit list';
+  const items = S.checklist.items, wk = S.checklist.weeks[mon] || {};
+  const done = items.filter(it => wk[it.id]).length;
+  const groups = [...new Set(items.map(it => it.group))];
+  const body = $('checklistBody');
+  // history: last 8 weeks ending with the viewed week
+  const hist = [];
+  for(let i = 7; i >= 0; i--){
+    const m = addDays(mon, -7*i), w = S.checklist.weeks[m] || {};
+    const n = items.filter(it => w[it.id]).length;
+    hist.push({m, pct: items.length ? n/items.length : 0});
+  }
+  const past = hist.slice(0, -1).filter(h => h.pct > 0);
+  const gcols = isDark() ? ['#5fb6dc','#6fcf9f','#b4a6f0','#e0b98f','#ee9a8c','#9fb3e0'] : ['#006b96','#2e7d5e','#5b4b8a','#7a5c40','#8a3030','#3a6a8a'];
+  const avg = past.length ? Math.round(past.reduce((a,h) => a + h.pct, 0) / past.length * 100) : null;
+  const tickSvg = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 6.2l2.3 2.3 4.7-5" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  body.innerHTML = `
+    <div class="cl-summary">
+      <div class="cl-score"><span class="cl-big">${done}</span><span class="cl-of">of ${items.length}<small>done this week</small></span></div>
+      <div class="cl-trend">
+        <div class="cl-trend-bars">${hist.map((h, i) => `<span class="${i === hist.length - 1 ? 'cur' : ''}" style="height:${Math.max(3, Math.round(h.pct*30))}px" title="Week of ${fmtDay(h.m, {day:'numeric', month:'short'})}: ${Math.round(h.pct*100)}%"></span>`).join('')}</div>
+        <div class="cl-trend-lbl">Last 8 weeks${avg !== null ? ` · avg ${avg}%` : ''}</div>
+      </div>
+    </div>
+    <div class="cl-groups">${groups.map((g, gi) => {
+      const gi_items = items.filter(it => it.group === g), gdone = gi_items.filter(it => wk[it.id]).length;
+      return `<section class="cl-group" style="--g:${gcols[gi % gcols.length]}">
+        <div class="cl-ghead"><span class="cl-gname">${esc(g)}</span><span class="cl-gcount">${gdone} / ${gi_items.length}</span></div>
+        <div class="cl-gbar"><div style="width:${gi_items.length ? gdone/gi_items.length*100 : 0}%"></div></div>
+        ${gi_items.map(it => `
+        <div class="cl-item${wk[it.id] ? ' done' : ''}" data-cl="${it.id}">
+          <button class="cl-check" data-x="cl-tick" aria-label="${wk[it.id] ? 'Mark not done' : 'Mark done'}">${tickSvg}</button>
+          <div class="cl-body" data-x="cl-tick2"><div class="cl-text">${esc(it.text)}</div>${it.where ? `<div class="cl-where">${esc(it.where)}</div>` : ''}</div>
+          ${clEditing ? '<button class="cl-sched cl-del" data-x="cl-del" aria-label="Remove item" title="Remove">×</button>'
+            : '<button class="cl-sched" data-x="cl-sched" aria-label="Schedule" title="Put it on the schedule">+</button>'}
+        </div>`).join('')}
+      </section>`;
+    }).join('')}</div>
+    ${clEditing ? `<div class="cl-edit-row">
+      <select id="clNewGroup">${groups.map(g => `<option>${esc(g)}</option>`).join('')}<option value="__new">New group…</option></select>
+      <input id="clNewText" placeholder="New checklist item">
+      <input id="clNewWhere" placeholder="Where (optional)" style="flex:.6;min-width:110px">
+      <button class="btn-sm" data-x="cl-add">Add</button>
+    </div><button class="link-btn" data-x="cl-reset" style="margin-top:8px">Reset to the Job Search Plan's 12 items</button>` : ''}`;
+  body.querySelectorAll('.cl-item').forEach(row => {
+    const it = items.find(x => x.id === row.dataset.cl);
+    const toggle = () => {
+      const w = S.checklist.weeks[mon] = S.checklist.weeks[mon] || {};
+      if(w[it.id]) delete w[it.id]; else w[it.id] = true;
+      if(!Object.keys(w).length) delete S.checklist.weeks[mon];
+      commit(); renderChecklist();
+    };
+    row.querySelector('[data-x=cl-tick]').onclick = toggle;
+    if(!clEditing) row.querySelector('[data-x=cl-tick2]').onclick = toggle;
+    const sc = row.querySelector('[data-x=cl-sched]');
+    if(sc) sc.onclick = () => openBlockModal({dateKey:curKey, title:it.text, link:{type:'checklist', id:it.id}, cat:'jobs'});
+    const del = row.querySelector('[data-x=cl-del]');
+    if(del) del.onclick = () => {
+      const i = items.indexOf(it); items.splice(i, 1); commit(); renderChecklist();
+      pushUndo('Checklist item removed', () => { S.checklist.items.splice(i, 0, it); });
+    };
+  });
+  const add = body.querySelector('[data-x=cl-add]');
+  if(add){
+    const doAdd = () => {
+      const text = $('clNewText').value.trim(); if(!text) return;
+      let g = $('clNewGroup').value;
+      if(g === '__new'){ g = (prompt('Name of the new group?', '') || '').trim(); if(!g) return; }
+      items.push({id:uid(), group:g, text, where:$('clNewWhere').value.trim()});
+      commit(); renderChecklist(); setTimeout(() => { const t = $('clNewText'); if(t) t.focus(); }, 0);
+    };
+    add.onclick = doAdd;
+    $('clNewText').addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); doAdd(); } });
+    body.querySelector('[data-x=cl-reset]').onclick = () => {
+      if(!confirm('Replace your checklist items with the 12 from the Job Search Plan? Your ticks for the default items are kept.')) return;
+      S.checklist.items = defaultChecklist().items; commit(); renderChecklist();
+    };
+  }
+}
+// ── library ──
+let libEditing = false;
+function renderLibrary(){
+  $('libEditBtn').textContent = libEditing ? 'Done' : 'Edit';
+  const body = $('libraryBody');
+  if(libEditing){
+    body.innerHTML = `<textarea class="input-full" id="libText" rows="5" placeholder="One link per line. Optional label first:  CV 2026 | https://github.com/…">${esc(linksText(S.library))}</textarea>
+      <div class="field-hint" style="margin-top:4px">Tip: open a file in your career repo on github.com and copy the address. Private links open in the GitHub app or your logged-in browser.</div>`;
+    return;
+  }
+  body.innerHTML = S.library.length ? linkChips(S.library)
+    : '<div class="library-empty">Pin the files you open most — your current CV, the day-before cheat sheet, your story bible. Tap <b>Edit</b> and paste their links.</div>';
+}
+function toggleLibraryEdit(){
+  if(libEditing){ S.library = parseLinks($('libText').value); commit(); }
+  libEditing = !libEditing; renderLibrary();
+  if(libEditing) setTimeout(() => $('libText').focus(), 0);
 }
 
 // ════════════════════════════════════════════
@@ -1046,7 +1283,7 @@ function renderCases(){
   const list = S.cases.filter(c => (caseFilter === 'all' || c.status === caseFilter)
     && (!q || [c.title, c.source, c.topic, c.takeaways].some(x => (x || '').toLowerCase().includes(q))));
   const el = $('casesList');
-  if(!list.length){ el.innerHTML = `<div class="empty-state">${S.cases.length ? 'No case studies match.' : 'No case studies yet. Add your first one.'}</div>`; return; }
+  if(!list.length){ el.innerHTML = `<div class="empty-state">${S.cases.length ? 'Nothing matches.' : 'Your reading list is empty. Add your first case, report or article.'}</div>`; return; }
   el.innerHTML = list.map(c => {
     const st = CASE_STATUSES[c.status] || CASE_STATUSES['to-read'];
     const url = c.url && /^https?:\/\//i.test(c.url) ? `<a class="row-url" href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.url)}</a>` : (c.url ? `<div class="row-meta">${esc(c.url)}</div>` : '');
@@ -1062,7 +1299,7 @@ function renderCases(){
 function openCaseModal(id){
   editingCaseId = id || null;
   const c = id ? S.cases.find(x => x.id === id) : null;
-  $('caseModalTitle').textContent = c ? 'Edit Case Study' : 'Add Case Study';
+  $('caseModalTitle').textContent = c ? 'Edit reading item' : 'Add to Reading List';
   $('cTitle').value = c ? c.title : ''; $('cSource').value = c ? c.source || '' : ''; $('cTopic').value = c ? c.topic || '' : '';
   $('cStatus').value = c ? c.status : 'to-read'; $('cUrl').value = c ? c.url || '' : ''; $('cTake').value = c ? c.takeaways || '' : '';
   openModal('caseModal');
@@ -1074,12 +1311,12 @@ function confirmCase(){
   if(editingCaseId){ const c = S.cases.find(x => x.id === editingCaseId); Object.assign(c, data); stamp(c); }
   else S.cases.push(stamp({id:uid(), ...data}));
   const was = editingCaseId; closeModal('caseModal'); commit(); renderCases();
-  toast(was ? 'Case study updated' : 'Case study added');
+  toast(was ? 'Updated' : 'Added to your Reading List');
 }
 function deleteCase(id){
   const i = S.cases.findIndex(x => x.id === id); if(i < 0) return;
   const c = S.cases[i]; S.cases.splice(i, 1); tomb(id); commit(); renderCases();
-  pushUndo('Case study removed', () => { S.cases.splice(i, 0, c); delete S.tombstones[id]; });
+  pushUndo('Removed from Reading List', () => { S.cases.splice(i, 0, c); delete S.tombstones[id]; });
 }
 
 // ════════════════════════════════════════════
@@ -1118,7 +1355,7 @@ function renderJobs(){
     const dates = jobDates(j).map(d => `<div class="date-line${d.key < tk ? ' past' : d.key <= soon ? ' soon' : ''}"><span class="dl-k">${d.k}</span>${esc(d.text)}</div>`).join('')
       + (j.deadlineNote && !j.deadline ? `<div class="date-line warn"><span class="dl-k">Deadline</span>"${esc(j.deadlineNote)}" — set a date</div>` : '');
     return `<div class="trow">
-      <div><div class="row-title">${esc(j.company)}</div><div class="row-meta">${esc(j.role || '')}</div>${j.notes ? `<div class="row-take">${esc(j.notes)}</div>` : ''}</div>
+      <div><div class="row-title">${esc(j.company)}</div><div class="row-meta">${esc(j.role || '')}${j.source ? ` <span style="color:var(--text-dim)">· via ${esc(j.source)}</span>` : ''}</div>${j.notes ? `<div class="row-take">${esc(j.notes)}</div>` : ''}${linkChips([...(j.postingUrl ? [{label:'Job posting', url:j.postingUrl}] : []), ...(j.links || [])])}</div>
       <div><span class="status ${st.cls}">${st.label}</span></div>
       <div class="cell-dates">${dates || '<span class="row-meta">—</span>'}</div>
       <div class="row-meta"><span class="m-lbl">Next</span>${esc(j.nextAction || '—')}</div>
@@ -1134,19 +1371,25 @@ function openJobModal(id){
   $('jDeadline').value = j ? j.deadline || '' : ''; $('jInterview').value = j ? j.interviewAt || '' : ''; $('jInterviewDur').value = String(j ? j.interviewDur || 60 : 60);
   $('jFollow').value = j ? j.followUp || '' : ''; $('jNext').value = j ? j.nextAction || '' : ''; $('jNotes').value = j ? j.notes || '' : '';
   $('jDeadlineNote').textContent = j && j.deadlineNote ? `From your old version: "${j.deadlineNote}"` : '';
+  $('jUrl').value = j ? j.postingUrl || '' : ''; $('jSource').value = j ? j.source || '' : ''; $('jLinks').value = j ? linksText(j.links) : '';
   openModal('jobModal');
   if(!isPhone()) setTimeout(() => { if($('jobModal').classList.contains('open')) $('jCompany').focus(); }, 60);
 }
 function confirmJob(){
   const company = $('jCompany').value.trim(); if(!company){ toast('Please enter a company name'); return; }
   const data = {company, role:$('jRole').value.trim(), status:$('jStatus').value, deadline:$('jDeadline').value, interviewAt:$('jInterview').value,
-    interviewDur:+$('jInterviewDur').value || 60, followUp:$('jFollow').value, nextAction:$('jNext').value.trim(), notes:$('jNotes').value.trim()};
+    interviewDur:+$('jInterviewDur').value || 60, followUp:$('jFollow').value, nextAction:$('jNext').value.trim(), notes:$('jNotes').value.trim(),
+    postingUrl:/^https?:\/\//i.test($('jUrl').value.trim()) ? $('jUrl').value.trim() : '', source:$('jSource').value.trim(), links:parseLinks($('jLinks').value)};
+  // follow-up defaults to 10 days after applying, the same rule the Career Suite uses
+  const prev = editingJobId ? S.jobs.find(x => x.id === editingJobId) : null;
+  if(data.status === 'applied' && !data.followUp && (!prev || prev.status !== 'applied')){ data.followUp = addDays(todayKey(), 10); data._autoFollow = true; }
   let j;
   if(editingJobId){ j = S.jobs.find(x => x.id === editingJobId); Object.assign(j, data); if(data.deadline) delete j.deadlineNote; stamp(j); }
   else { j = stamp({id:uid(), ...data}); S.jobs.push(j); }
   if(data.interviewAt && (data.status === 'to-apply' || data.status === 'applied')){ j.status = 'interview'; }
+  const auto = j._autoFollow; delete j._autoFollow;
   const was = editingJobId; closeModal('jobModal'); commit(); renderView();
-  toast(was ? 'Role updated' : 'Role added');
+  toast((was ? 'Role updated' : 'Role added') + (auto ? ` · follow-up set for ${fmtDay(j.followUp)}` : ''));
 }
 function deleteJob(id){
   const i = S.jobs.findIndex(x => x.id === id); if(i < 0) return;
@@ -1164,15 +1407,27 @@ function renderReview(){
   $('reviewSavedLbl').textContent = d.review && d.review.savedAt ? 'Saved ' + new Date(d.review.savedAt).toLocaleString('en-GB', {weekday:'short', hour:'2-digit', minute:'2-digit'}) : '';
   const total = d.blocks.reduce((s,b) => s + b.endMin - b.startMin, 0);
   const isToday = curKey === todayKey(), past = curKey < todayKey();
-  const done = d.blocks.filter(b => past || (isToday && b.endMin <= nowMin())).reduce((s,b) => s + b.endMin - b.startMin, 0);
-  const deep = d.blocks.filter(b => b.category === 'deep').reduce((s,b) => s + b.endMin - b.startMin, 0);
+  const done = d.blocks.reduce((s,b) => s + doneMin(b), 0);
+  const deep = d.blocks.filter(b => b.category === 'deep').reduce((s,b) => s + doneMin(b), 0);
+  const skipped = d.blocks.filter(b => b.status === 'skipped').reduce((s,b) => s + b.endMin - b.startMin, 0);
   $('reviewStats').innerHTML = `
     <div class="r-stat"><div class="r-stat-num">${hrs(total)}h</div><div class="r-stat-lbl">Planned</div></div>
-    <div class="r-stat"><div class="r-stat-num">${hrs(done)}h</div><div class="r-stat-lbl">Elapsed</div></div>
-    <div class="r-stat"><div class="r-stat-num">${hrs(deep)}h</div><div class="r-stat-lbl">Deep work</div></div>
+    <div class="r-stat"><div class="r-stat-num">${hrs(done)}h</div><div class="r-stat-lbl">Done${skipped ? ` · ${hrs(skipped)}h skipped` : ''}</div></div>
+    <div class="r-stat"><div class="r-stat-num">${hrs(deep)}h</div><div class="r-stat-lbl">Deep work done</div></div>
     <div class="r-stat"><div class="r-stat-num">${d.priorities.filter(p => p.done).length}/${d.priorities.length}</div><div class="r-stat-lbl">Priorities</div></div>`;
   $('reviewPriorities').innerHTML = d.priorities.length ? d.priorities.map(p => `<div class="carry-item"><span class="check${p.done ? ' checked' : ''}"></span><span>${esc(p.text)}</span></div>`).join('')
     : '<div class="empty-mini">No priorities set for this day.</div>';
+  const rb = $('reviewBlocks'); rb.innerHTML = '';
+  const blocksSorted = [...d.blocks].sort((a,b) => a.startMin - b.startMin);
+  if(!blocksSorted.length) rb.innerHTML = '<div class="empty-mini">No blocks on this day.</div>';
+  blocksSorted.forEach(b => {
+    const row = document.createElement('div'); row.className = 'rb-row';
+    row.innerHTML = `<span class="rb-time">${toTS(b.startMin)}</span><span class="rb-bar" style="background:${cat(b.category).color}"></span>
+      <span class="rb-title">${esc(b.title)}${b.sprint ? ' <span class="pitem-tag">sprint</span>' : ''}</span>
+      <span class="rb-btns"><button data-st="done" class="${b.status === 'done' ? 'on' : ''}" aria-label="Done">✓</button><button data-st="partial" class="pt ${b.status === 'partial' ? 'on' : ''}" aria-label="Partly">½</button><button data-st="skipped" class="sk ${b.status === 'skipped' ? 'on' : ''}" aria-label="Skipped">✕</button></span>`;
+    row.querySelectorAll('[data-st]').forEach(btn => btn.onclick = () => { setBlockStatus(b, btn.dataset.st); renderReview(); });
+    rb.appendChild(row);
+  });
   const next = addDays(curKey, 1);
   $('carryLbl').textContent = `Tick unfinished priorities to move to ${fmtDay(next)}`;
   const inc = d.priorities.filter(p => !p.done);
@@ -1318,7 +1573,7 @@ function summarize(st){
     ['Priorities', days.reduce((s,d) => s + d.priorities.length, 0)],
     ['Braindump items', st.braindump.length],
     ['Projects (tasks)', `${st.projects.length} (${st.projects.reduce((s,p) => s + p.tasks.length, 0)})`],
-    ['Case studies', st.cases.length],
+    ['Reading list (case studies)', st.cases.length],
     ['Job applications', st.jobs.length],
     ['Templates', Object.keys(st.templates).length],
     ['Daily notes', days.filter(d => d.note).length],
@@ -1370,6 +1625,8 @@ function mergeStates(cur, inc){
   });
   Object.entries(inc.weeklyGoals).forEach(([k, v]) => cur.weeklyGoals[k] = joinText(cur.weeklyGoals[k], v));
   if((inc.streak.lastDate || '') > (cur.streak.lastDate || '') || (inc.streak.lastDate === cur.streak.lastDate && inc.streak.count > cur.streak.count)) cur.streak = inc.streak;
+  Object.entries((inc.checklist && inc.checklist.weeks) || {}).forEach(([m, w]) => { cur.checklist.weeks[m] = Object.assign({}, w, cur.checklist.weeks[m] || {}); });
+  (inc.library || []).forEach(l => { if(!cur.library.some(x => x.url === l.url)) cur.library.push(l); });
   Object.assign(cur.tombstones, inc.tombstones || {});
   return cur;
 }
@@ -1379,6 +1636,7 @@ function applyImport(mode){
   try { localStorage.setItem(SNAP_KEY, JSON.stringify({takenAt:now(), state:S})); } catch(e){ console.warn('snapshot failed', e); }
   const inc = pendingImport.state;
   S = mode === 'replace' || !hasData(S) ? inc : mergeStates(S, inc);
+  seedOnce();
   S.meta.imports = (S.meta.imports || []).concat({at:now(), source:pendingImport.source, mode});
   pendingImport = null;
   persist(); closeModal('importModal'); closeModal('settingsModal');
@@ -1423,7 +1681,7 @@ function detectV1InBrowser(){
 function renderSettings(){
   let bytes = 0; try { bytes = (localStorage.getItem(STORE_KEY) || '').length; } catch(e){}
   const s = summarize(S);
-  $('storageInfo').innerHTML = `${(bytes/1024).toFixed(0)} KB used on this device · ${s[1][1]} blocks across ${s[0][1]} days, ${S.cases.length} case studies, ${S.jobs.length} roles.<br>
+  $('storageInfo').innerHTML = `${(bytes/1024).toFixed(0)} KB used on this device · ${s[1][1]} blocks across ${s[0][1]} days, ${S.cases.length} reading-list items, ${S.jobs.length} roles.<br>
     <span class="field-hint">Data lives only on this device until Drive sync (Stage 3). Export a backup now and then.</span>`;
   let snap = null; try { snap = JSON.parse(localStorage.getItem(SNAP_KEY)); } catch(e){}
   const ub = $('undoImportBtn');
@@ -1466,6 +1724,10 @@ function setupEvents(){
   document.addEventListener('click', e => {
     const closeBtn = e.target.closest('[data-close]');
     if(closeBtn){ closeModal(closeBtn.closest('.modal-overlay').id); return; }
+    const mb = e.target.closest('.more-btn');
+    if(mb){ const row = mb.closest('.priority-item,.bd-item,.task-item,.cl-item'); if(row) row.classList.toggle('row-open'); return; }
+    const th = e.target.closest('[data-theme-set]');
+    if(th){ try { localStorage.setItem('tb2_theme', th.dataset.themeSet); } catch(err){} applyTheme(); renderAll(); return; }
     const t = e.target.closest('[data-act],[data-tab],[data-cf],[data-jf],[data-range],[data-edit-case],[data-del-case],[data-edit-job],[data-del-job]');
     if(!t) return;
     if(t.dataset.tab){ switchView(t.dataset.tab); if(t.dataset.tab === 'day') requestAnimationFrame(scrollDayToNow); if(t.dataset.tab === 'week') requestAnimationFrame(scrollWeekToMorning); return; }
@@ -1488,7 +1750,9 @@ function setupEvents(){
       case 'open-left': openSheet_('left'); break;
       case 'open-info': openSheet_('right', 'info'); break;
       case 'sprint': quickSprint(); break;
-      case 'stop-sprint': sprint = null; saveSprint(); tick(); toast('Sprint stopped'); break;
+      case 'stop-sprint': stopSprint(); break;
+      case 'cl-edit': clEditing = !clEditing; renderChecklist(); break;
+      case 'lib-edit': toggleLibraryEdit(); break;
       case 'save-template': saveTemplate(); break;
       case 'add-priority': addPriority(); break;
       case 'add-project': addProject(); break;
@@ -1559,13 +1823,20 @@ function setupEvents(){
 
   // layout switch (rotate / resize across the phone breakpoint)
   mq.addEventListener('change', () => { closeSheets(); renderDayGrid(); renderView(); renderEditor(); });
+  darkMq.addEventListener('change', () => { if(themePref() === 'auto'){ applyTheme(); renderAll(); } });
 }
 
 // ════════════════════════════════════════════
 // BOOT
 // ════════════════════════════════════════════
 function boot(){
-  try { const sp = JSON.parse(localStorage.getItem('tb2_sprint')); if(sp && sp.end > Date.now()) sprint = sp; } catch(e){}
+  try {
+    const sp = JSON.parse(localStorage.getItem('tb2_sprint'));
+    if(sp && sp.end > Date.now()) sprint = sp;
+    else if(sp){ localStorage.removeItem('tb2_sprint'); logSprint(sp, sp.end); }   // finished while the app was closed
+  } catch(e){}
+  applyTheme();
+  if(hasData(S)) seedOnce();
   setupEvents();
   renderDayGrid();
   setupGridCreate();
