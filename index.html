@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>TimeBox</title>
+<meta name="theme-color" content="#1a2744">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="TimeBox">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%231a2744'/><text x='16' y='24' font-family='Georgia,serif' font-size='24' font-weight='700' text-anchor='middle' fill='white'>T</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:wght@300;400;500&family=IBM+Plex+Mono:wght@300;400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app" id="app">
+
+<!-- HEADER -->
+<header class="hdr">
+  <div class="logo">Time<em>Box</em></div>
+  <div class="hdivider"></div>
+  <div class="date-display" id="headerDate"></div>
+  <div class="saved-ind" id="savedInd"></div>
+  <div class="header-actions">
+    <span class="kbd-hint desktop-only">N new · Del remove · ↑↓ nudge · ⌘Z undo · ? help</span>
+    <button class="btn desktop-only" data-act="export" title="Download a backup of all your TimeBox data">Export</button>
+    <button class="btn desktop-only" data-act="import" title="Import a TimeBox backup (v1 or v2)">Import</button>
+    <button class="btn icon-btn" data-act="settings" title="Settings &amp; backup" aria-label="Settings">⚙</button>
+  </div>
+  <input type="file" id="importFile" accept="application/json,.json" hidden>
+</header>
+
+<!-- TABS (top bar on desktop, bottom bar on phone) -->
+<nav class="tabs" id="tabs">
+  <button class="tab active" data-tab="day"><span class="tab-ico">◷</span><span class="tab-lbl">Schedule</span></button>
+  <button class="tab" data-tab="week"><span class="tab-ico">▦</span><span class="tab-lbl">Week</span></button>
+  <button class="tab" data-tab="plan"><span class="tab-ico">☰</span><span class="tab-lbl">Planning</span></button>
+  <button class="tab" data-tab="cases"><span class="tab-ico">❏</span><span class="tab-lbl">Cases</span></button>
+  <button class="tab" data-tab="jobs"><span class="tab-ico">◆</span><span class="tab-lbl">Jobs</span></button>
+  <button class="tab" data-tab="review"><span class="tab-ico">✓</span><span class="tab-lbl">Review</span><span class="tab-badge" id="reviewBadge" hidden>!</span></button>
+</nav>
+
+<!-- LEFT SIDEBAR (sheet on phone) -->
+<aside class="side-left sheet" id="sideLeft">
+  <div class="sheet-grip"></div>
+  <div class="sb-section">
+    <div class="section-label">Default category</div>
+    <div class="category-list" id="categoryList"></div>
+  </div>
+  <div class="sb-section">
+    <div class="section-label">Templates</div>
+    <div class="template-list" id="templateList"></div>
+    <div class="save-tmpl-row">
+      <input class="input-sm" id="templateNameInput" placeholder="Save this day as…">
+      <button class="btn-sm" data-act="save-template">Save</button>
+    </div>
+    <div class="hint">Stamp adds a template to the day you're viewing. Load replaces it.</div>
+  </div>
+  <div class="sb-section kbd-section desktop-only" id="kbdSection" hidden>
+    <div class="section-label">Keyboard shortcuts</div>
+    <div class="kbd-row"><span>New block</span><kbd>N</kbd></div>
+    <div class="kbd-row"><span>Delete selected</span><kbd>Del</kbd></div>
+    <div class="kbd-row"><span>Nudge 15 min</span><kbd>↑ ↓</kbd></div>
+    <div class="kbd-row"><span>Shorter / longer</span><kbd>[ ]</kbd></div>
+    <div class="kbd-row"><span>Previous / next day</span><kbd>← →</kbd></div>
+    <div class="kbd-row"><span>Cycle category</span><kbd>C</kbd></div>
+    <div class="kbd-row"><span>Deselect</span><kbd>Esc</kbd></div>
+    <div class="kbd-row"><span>Undo</span><kbd>⌘Z</kbd></div>
+    <div class="kbd-row"><span>Toggle this list</span><kbd>?</kbd></div>
+  </div>
+</aside>
+
+<!-- ═══════════ DAY VIEW ═══════════ -->
+<section class="view active" id="view-day">
+  <div class="day-nav">
+    <button class="nav-btn" data-act="day-prev" aria-label="Previous day">‹</button>
+    <div class="nav-title" id="dayTitle"></div>
+    <button class="nav-btn" data-act="day-next" aria-label="Next day">›</button>
+    <button class="nav-btn" id="goTodayBtn" data-act="day-today">Today</button>
+    <button class="nav-btn mobile-only" data-act="open-left" title="Templates">Templates</button>
+  </div>
+  <button class="now-strip mobile-only" id="nowStrip" data-act="open-info"></button>
+  <div class="allday-strip" id="dayAllDay" hidden></div>
+  <div class="grid-container" id="dayScroll">
+    <div class="time-labels" id="timeLabels"></div>
+    <div class="grid-track" id="gridTrack">
+      <div id="hourRows"></div>
+      <div id="blocksLayer"></div>
+      <div class="now-line" id="nowLine" hidden></div>
+      <div class="drag-ghost" id="dragGhost" hidden></div>
+    </div>
+  </div>
+  <button class="fab mobile-only" data-act="new-block" aria-label="New block">+</button>
+</section>
+
+<!-- ═══════════ WEEK VIEW ═══════════ -->
+<section class="view" id="view-week">
+  <div class="day-nav">
+    <button class="nav-btn" data-act="week-prev" aria-label="Previous week">‹</button>
+    <div class="nav-title" id="weekTitle"></div>
+    <button class="nav-btn" data-act="week-next" aria-label="Next week">›</button>
+    <button class="nav-btn" data-act="week-today">This week</button>
+  </div>
+  <div class="week-scroll" id="weekScroll"><div class="week-grid" id="weekGrid"></div></div>
+</section>
+
+<!-- ═══════════ PLANNING VIEW ═══════════ -->
+<section class="view scroll-view" id="view-plan">
+  <div class="planning-inner">
+    <div class="plan-card wide">
+      <div class="plan-card-header">
+        <div class="plan-card-title">Weekly Focus</div>
+        <div class="plan-card-subtitle" id="focusWeekLbl"></div>
+      </div>
+      <div class="plan-card-body">
+        <textarea class="soft-textarea" id="weeklyGoal" rows="2" placeholder="What does a successful week look like? One sentence…"></textarea>
+      </div>
+    </div>
+
+    <div class="plan-card">
+      <div class="plan-card-header">
+        <div class="plan-card-title">Top Priorities</div>
+        <div class="plan-card-subtitle" id="prioDayLbl"></div>
+      </div>
+      <div class="plan-card-body">
+        <div class="prio-daynav">
+          <button class="mini-btn" data-act="day-prev">‹ Prev day</button>
+          <button class="mini-btn" data-act="day-today">Today</button>
+          <button class="mini-btn" data-act="day-next">Next day ›</button>
+        </div>
+        <div class="priority-list" id="priorityList"></div>
+        <div class="add-item-row">
+          <input class="add-item-input" id="priorityInput" placeholder="Add a priority…" enterkeyhint="done">
+          <button class="add-item-btn" data-act="add-priority" aria-label="Add priority">+</button>
+        </div>
+        <button class="carry-btn" id="bringForwardBtn" data-act="bring-forward" hidden></button>
+      </div>
+    </div>
+
+    <div class="plan-card">
+      <div class="plan-card-header">
+        <div class="plan-card-title">The Projects</div>
+        <div class="plan-card-subtitle">Active workstreams</div>
+      </div>
+      <div class="plan-card-body">
+        <div class="project-list" id="projectList"></div>
+        <div class="add-item-row">
+          <input class="add-item-input" id="projectInput" placeholder="New project…" enterkeyhint="done">
+          <button class="add-item-btn" data-act="add-project" aria-label="Add project">+</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="plan-card wide">
+      <div class="plan-card-header">
+        <div class="plan-card-title">Braindump</div>
+        <div class="plan-card-subtitle">Capture everything — ★ promotes to today's priorities</div>
+      </div>
+      <div class="plan-card-body">
+        <div class="braindump-list" id="braindumpList"></div>
+        <div class="add-item-row">
+          <input class="add-item-input" id="bdInput" placeholder="What's on your mind? Enter to add…" enterkeyhint="done">
+        </div>
+      </div>
+    </div>
+
+    <div class="plan-card wide">
+      <div class="plan-card-header">
+        <div class="plan-card-title">Time Allocation</div>
+        <div class="plan-card-subtitle" id="allocLbl"></div>
+      </div>
+      <div class="plan-card-body">
+        <div class="seg">
+          <button class="seg-btn active" data-range="week">Week</button>
+          <button class="seg-btn" data-range="month">Month</button>
+        </div>
+        <div id="allocBars"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ CASES VIEW ═══════════ -->
+<section class="view scroll-view" id="view-cases">
+  <div class="list-inner">
+    <div class="list-header">
+      <div>
+        <div class="list-title">Case Studies</div>
+        <div class="list-sub">Reading list — sources, status and key takeaways</div>
+      </div>
+      <button class="primary-btn" data-act="new-case">+ Add</button>
+    </div>
+    <div class="filter-row">
+      <div class="chips" id="caseFilters">
+        <button class="chip active" data-cf="all">All</button>
+        <button class="chip" data-cf="to-read">To Read</button>
+        <button class="chip" data-cf="in-progress">In Progress</button>
+        <button class="chip" data-cf="done">Done</button>
+      </div>
+      <input class="search-input" id="caseSearch" type="search" placeholder="Search…">
+    </div>
+    <div class="table cases-table">
+      <div class="table-head"><div>Title</div><div>Source</div><div>Topic / Industry</div><div>Status</div><div></div></div>
+      <div id="casesList"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ JOBS VIEW ═══════════ -->
+<section class="view scroll-view" id="view-jobs">
+  <div class="list-inner">
+    <div class="list-header">
+      <div>
+        <div class="list-title">Job Search</div>
+        <div class="list-sub">Applications, interviews and next actions — sorted by what's coming up</div>
+      </div>
+      <button class="primary-btn" data-act="new-job">+ Add</button>
+    </div>
+    <div class="jobs-stats" id="jobsStats"></div>
+    <div class="filter-row">
+      <div class="chips" id="jobFilters">
+        <button class="chip active" data-jf="all">All</button>
+        <button class="chip" data-jf="to-apply">To Apply</button>
+        <button class="chip" data-jf="applied">Applied</button>
+        <button class="chip" data-jf="interview">Interview</button>
+        <button class="chip" data-jf="offer">Offer</button>
+        <button class="chip" data-jf="rejected">Rejected</button>
+      </div>
+    </div>
+    <div class="table jobs-table">
+      <div class="table-head"><div>Company / Role</div><div>Status</div><div>Key dates</div><div>Next action</div><div></div></div>
+      <div id="jobsList"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ REVIEW VIEW ═══════════ -->
+<section class="view scroll-view" id="view-review">
+  <div class="review-inner">
+    <div class="review-header">
+      <div class="review-title">End of Day Review</div>
+      <div class="review-date" id="reviewDate"></div>
+      <div class="review-saved" id="reviewSavedLbl"></div>
+    </div>
+    <div class="review-section">
+      <div class="review-section-header"><div class="review-section-title">The day at a glance</div></div>
+      <div class="review-section-body">
+        <div class="review-stats" id="reviewStats"></div>
+        <div class="carry-label">Priorities</div>
+        <div class="carry-list" id="reviewPriorities"></div>
+      </div>
+    </div>
+    <div class="review-section">
+      <div class="review-section-header"><div class="review-section-title">What went well?</div></div>
+      <div class="review-section-body"><textarea class="soft-textarea" id="rvWell" rows="4" placeholder="Wins, breakthroughs, good decisions…"></textarea></div>
+    </div>
+    <div class="review-section">
+      <div class="review-section-header"><div class="review-section-title">What slipped or surprised you?</div></div>
+      <div class="review-section-body"><textarea class="soft-textarea" id="rvSlipped" rows="4" placeholder="What didn't go to plan? What interrupted you? What took longer?…"></textarea></div>
+    </div>
+    <div class="review-section">
+      <div class="review-section-header"><div class="review-section-title">Carry forward</div></div>
+      <div class="review-section-body">
+        <div class="carry-label" id="carryLbl">Tick unfinished priorities to move to the next day</div>
+        <div class="carry-list" id="carryList"></div>
+        <textarea class="soft-textarea" id="rvCarryNotes" rows="3" placeholder="Notes for tomorrow — saved to tomorrow's Daily Note…" style="margin-top:10px"></textarea>
+      </div>
+    </div>
+    <div class="review-section">
+      <div class="review-section-header"><div class="review-section-title">One thing to remember</div></div>
+      <div class="review-section-body"><textarea class="soft-textarea" id="rvInsight" rows="2" placeholder="A key insight, lesson or intention…"></textarea></div>
+    </div>
+    <div class="review-save-row"><button class="primary-btn" data-act="save-review">Save Review</button></div>
+  </div>
+</section>
+
+<!-- RIGHT SIDEBAR (sheet on phone) -->
+<aside class="side-right sheet" id="sideRight">
+  <div class="sheet-grip"></div>
+  <div class="right-section rs-timer">
+    <div class="r-section-label">Active block</div>
+    <div class="timer-card">
+      <div class="timer-block-name" id="timerName">—</div>
+      <div class="timer-subtitle" id="timerSub">No block in progress</div>
+      <div class="timer-time" id="timerTime">—:——</div>
+      <div class="timer-bar"><div class="timer-bar-fill" id="timerFill"></div></div>
+      <div class="timer-btns">
+        <button class="timer-btn run" data-act="sprint" title="Skip planning — just start working for 25 minutes">⚡ 25-min sprint</button>
+        <button class="timer-btn" id="stopSprintBtn" data-act="stop-sprint" hidden>◼ Stop</button>
+      </div>
+    </div>
+  </div>
+  <div class="right-section rs-editor">
+    <div class="r-section-label">Block editor</div>
+    <div id="editorBody"></div>
+  </div>
+  <div class="right-section rs-note">
+    <div class="r-section-label">Daily note</div>
+    <textarea class="input-full" id="dailyNote" rows="3" placeholder="Intention or notes for this day…"></textarea>
+  </div>
+  <div class="right-section rs-stats">
+    <div class="r-section-label">Daily summary</div>
+    <div class="stats-grid" id="statsGrid"></div>
+  </div>
+</aside>
+</div>
+
+<div class="sheet-backdrop" id="sheetBackdrop"></div>
+
+<!-- ═══════════ MODALS ═══════════ -->
+<div class="modal-overlay" id="blockModal">
+  <div class="modal">
+    <div class="modal-title" id="blockModalTitle">New time block</div>
+    <div class="field"><label>Title</label><input class="input-full" id="nbTitle" placeholder="What are you working on?" enterkeyhint="done"></div>
+    <div class="field"><label>Date</label><input class="input-full" id="nbDate" type="date"></div>
+    <div class="field"><label>Time</label>
+      <div class="time-row"><input class="input-full" id="nbStart" type="time" step="900"><span>–</span><input class="input-full" id="nbEnd" type="time" step="900"></div>
+    </div>
+    <div class="field"><label>Category</label><div class="cat-chips" id="nbCats"></div></div>
+    <div class="field"><label>Google Calendar</label><select class="input-full" id="nbCal"></select><div class="field-hint" id="nbCalHint"></div></div>
+    <div class="field"><label>Notes</label><textarea class="input-full" id="nbNotes" rows="2" placeholder="Optional…"></textarea></div>
+    <div class="modal-row">
+      <button class="modal-cancel" data-close>Cancel</button>
+      <button class="modal-confirm" data-act="confirm-block">Create</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="caseModal">
+  <div class="modal">
+    <div class="modal-title" id="caseModalTitle">Add Case Study</div>
+    <div class="field"><label>Title</label><input class="input-full" id="cTitle" placeholder="e.g. McKinsey — Reviving a Retail Brand"></div>
+    <div class="field"><label>Source</label><input class="input-full" id="cSource" placeholder="McKinsey, HBR, Deloitte, Oliver Wyman…"></div>
+    <div class="field"><label>Topic / Industry</label><input class="input-full" id="cTopic" placeholder="FP&amp;A, Retail, Cost Reduction…"></div>
+    <div class="field"><label>Status</label>
+      <select class="input-full" id="cStatus"><option value="to-read">To Read</option><option value="in-progress">In Progress</option><option value="done">Done</option></select>
+    </div>
+    <div class="field"><label>URL / Reference</label><input class="input-full" id="cUrl" placeholder="Link or reference (optional)" inputmode="url"></div>
+    <div class="field"><label>Key takeaways</label><textarea class="input-full" id="cTake" rows="4" placeholder="Frameworks, insights, what you'd reuse…"></textarea></div>
+    <div class="modal-row">
+      <button class="modal-cancel" data-close>Cancel</button>
+      <button class="modal-confirm" data-act="confirm-case">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="jobModal">
+  <div class="modal">
+    <div class="modal-title" id="jobModalTitle">Add Role</div>
+    <div class="field"><label>Company</label><input class="input-full" id="jCompany" placeholder="KPMG, Bain, Schneider Electric…"></div>
+    <div class="field"><label>Role / title</label><input class="input-full" id="jRole" placeholder="Senior FP&amp;A Analyst"></div>
+    <div class="field"><label>Status</label>
+      <select class="input-full" id="jStatus"><option value="to-apply">To Apply</option><option value="applied">Applied</option><option value="interview">Interview</option><option value="offer">Offer</option><option value="rejected">Rejected</option></select>
+    </div>
+    <div class="field"><label>Application deadline</label><input class="input-full" id="jDeadline" type="date"><div class="field-hint" id="jDeadlineNote"></div></div>
+    <div class="field"><label>Interview</label>
+      <div class="time-row"><input class="input-full" id="jInterview" type="datetime-local" step="900"><select class="input-full" id="jInterviewDur" style="max-width:110px"><option value="30">30 min</option><option value="45">45 min</option><option value="60" selected>1 hour</option><option value="90">1.5 hours</option><option value="120">2 hours</option><option value="180">3 hours</option></select></div>
+      <div class="field-hint">Shows in your Schedule and Week view. Goes to your main Google calendar in Stage 3.</div>
+    </div>
+    <div class="field"><label>Follow up on</label><input class="input-full" id="jFollow" type="date"></div>
+    <div class="field"><label>Next action</label><input class="input-full" id="jNext" placeholder="Send follow-up email, prep case interview…"></div>
+    <div class="field"><label>Notes</label><textarea class="input-full" id="jNotes" rows="3" placeholder="Contacts, salary range, culture notes…"></textarea></div>
+    <div class="modal-row">
+      <button class="modal-cancel" data-close>Cancel</button>
+      <button class="modal-confirm" data-act="confirm-job">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="importModal">
+  <div class="modal modal-wide">
+    <div class="modal-title" id="importTitle">Import backup</div>
+    <div class="import-source" id="importSource"></div>
+    <div class="import-summary" id="importSummary"></div>
+    <div class="import-warn" id="importWarn"></div>
+    <div class="import-note" id="importNote"></div>
+    <div class="modal-row">
+      <button class="modal-cancel" data-close>Cancel</button>
+      <button class="modal-cancel" id="importReplaceBtn" data-act="import-replace">Replace current data</button>
+      <button class="modal-confirm" id="importMergeBtn" data-act="import-merge">Import</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="settingsModal">
+  <div class="modal modal-wide">
+    <div class="modal-title">Settings &amp; backup</div>
+    <div class="settings-group">
+      <div class="settings-label">Backup</div>
+      <div class="settings-row">
+        <button class="modal-confirm" data-act="export">Export backup</button>
+        <button class="modal-cancel" data-act="import">Import backup…</button>
+      </div>
+      <div class="field-hint">Import accepts both TimeBox 1 backups (timebox-backup-….json) and TimeBox 2 backups. You'll see a summary before anything changes.</div>
+      <button class="modal-cancel" id="undoImportBtn" data-act="undo-import" hidden style="margin-top:8px;width:100%"></button>
+    </div>
+    <div class="settings-group">
+      <div class="settings-label">Storage</div>
+      <div class="settings-info" id="storageInfo"></div>
+    </div>
+    <div class="settings-group">
+      <div class="settings-label">Google Calendar &amp; sync</div>
+      <div class="settings-info">Not connected yet — this arrives in Stage 3. Blocks already record where they'll go (Auto: Meetings → main calendar, everything else → TimeBox calendar).</div>
+    </div>
+    <div class="settings-group">
+      <div class="settings-label">About</div>
+      <div class="settings-info" id="aboutInfo"></div>
+    </div>
+    <div class="modal-row"><button class="modal-confirm" data-close>Done</button></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"><span id="toastMsg"></span><button id="toastAction" hidden></button></div>
+
+<script src="app.js"></script>
+</body>
+</html>
