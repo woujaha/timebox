@@ -1,4 +1,4 @@
-# TimeBox 2 — Stage 2
+# TimeBox 2 — Stage 3
 
 Mobile-ready rebuild of TimeBox. Works on laptop and iPhone, installs as a home-screen app (Stage 2), and is prepared for Google Calendar + Drive sync (Stage 3).
 
@@ -44,3 +44,10 @@ Keep all files together in one folder. Don't rename them.
 - **Materials links:** on blocks, jobs and projects, plus a pinned **Library** card in Planning. One link per line, optionally `Label | link`.
 - **Jobs:** posting link and source fields; marking a role Applied sets a follow-up 10 days out if none is set.
 - **Housekeeping:** search engines told not to index the page; placeholders made generic; updates load reliably.
+
+## Stage 3: Google sync
+
+- **Drive sync:** connect each device in ⚙ → Google Calendar & sync. Data syncs on every change, when you open the app, and every 2 minutes. Per item, the newest edit wins; deletions stick; offline edits sync when you're back online.
+- **Google Calendar:** blocks go to the "TimeBox" calendar (Meetings to your main calendar), with category colours. Interviews go to your main calendar with a 1-hour reminder; application deadlines (roles still "To Apply") and follow-ups go to TimeBox as all-day events. Only from the day you connect onwards; nothing is backfilled. Edit and delete in TimeBox; changes made in Google Calendar are overwritten.
+- **Career Suite → TimeBox:** "Send to TimeBox" on a scouted job adds it to Job Search at the next sync.
+- The backend is your own Google Apps Script (`Code.gs`, not in this repo). The secret key lives only on your devices and in the script, never in this repo.

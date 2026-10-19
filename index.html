@@ -17,7 +17,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:wght@300;400;500&family=IBM+Plex+Mono:wght@300;400&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=2.1.2">
+<link rel="stylesheet" href="styles.css?v=3.0.0">
 </head>
 <body>
 <div class="app" id="app">
@@ -32,6 +32,7 @@
     <span class="kbd-hint desktop-only">N new · Del remove · ↑↓ nudge · ⌘Z undo · ? help</span>
     <button class="btn desktop-only" data-act="export" title="Download a backup of all your TimeBox data">Export</button>
     <button class="btn desktop-only" data-act="import" title="Import a TimeBox backup (v1 or v2)">Import</button>
+    <button class="sync-dot" id="syncDot" data-act="sync-status" data-state="idle" hidden aria-label="Google sync status"></button>
     <button class="btn icon-btn" data-act="settings" title="Settings &amp; backup" aria-label="Settings">⚙</button>
   </div>
   <input type="file" id="importFile" accept="application/json,.json" hidden>
@@ -389,7 +390,7 @@
     <div class="field"><label>Application deadline</label><input class="input-full" id="jDeadline" type="date"><div class="field-hint" id="jDeadlineNote"></div></div>
     <div class="field"><label>Interview</label>
       <div class="time-row"><input class="input-full" id="jInterview" type="datetime-local" step="900"><select class="input-full" id="jInterviewDur" style="max-width:110px"><option value="30">30 min</option><option value="45">45 min</option><option value="60" selected>1 hour</option><option value="90">1.5 hours</option><option value="120">2 hours</option><option value="180">3 hours</option></select></div>
-      <div class="field-hint">Shows in your Schedule and Week view. Goes to your main Google calendar in Stage 3.</div>
+      <div class="field-hint">Shows in your Schedule and Week view, and in your main Google calendar once connected.</div>
     </div>
     <div class="field"><label>Follow up on</label><input class="input-full" id="jFollow" type="date"></div>
     <div class="field"><label>Next action</label><input class="input-full" id="jNext" placeholder="e.g. Send follow-up email"></div>
@@ -421,6 +422,10 @@
   <div class="modal modal-wide">
     <div class="modal-title">Settings &amp; backup</div>
     <div class="settings-group">
+      <div class="settings-label">Google Calendar &amp; sync</div>
+      <div id="connBody"></div>
+    </div>
+    <div class="settings-group">
       <div class="settings-label">Backup</div>
       <div class="settings-row">
         <button class="modal-confirm" data-act="export">Export backup</button>
@@ -443,10 +448,6 @@
       <div class="settings-info" id="storageInfo"></div>
     </div>
     <div class="settings-group">
-      <div class="settings-label">Google Calendar &amp; sync</div>
-      <div class="settings-info">Not connected yet — this arrives in Stage 3. Blocks already record where they'll go (Auto: Meetings → main calendar, everything else → TimeBox calendar).</div>
-    </div>
-    <div class="settings-group">
       <div class="settings-label">About</div>
       <div class="settings-info" id="aboutInfo"></div>
     </div>
@@ -456,6 +457,6 @@
 
 <div class="toast" id="toast"><span id="toastMsg"></span><button id="toastAction" hidden></button></div>
 
-<script src="app.js?v=2.1.2"></script>
+<script src="app.js?v=3.0.0"></script>
 </body>
 </html>

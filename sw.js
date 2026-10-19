@@ -1,6 +1,6 @@
 /* TimeBox service worker — makes the app open instantly and work offline.
    Your data is NOT stored here; it lives in the app's own storage. Bump VERSION when you deploy changes. */
-const VERSION = 'tb-2.1.2-s2';
+const VERSION = 'tb-3.0.0-s3';
 const SHELL = ['./', './index.html', './styles.css', './app.js', './manifest.webmanifest',
   './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
 

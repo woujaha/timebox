@@ -4,7 +4,7 @@
    and push to Google Calendar without another migration. */
 'use strict';
 
-const APP_VERSION = '2.1.2 · Stage 2';
+const APP_VERSION = '3.0.0 · Stage 3';
 const STORE_KEY = 'tb2_state';
 const SNAP_KEY = 'tb2_snapshot';
 
@@ -143,7 +143,7 @@ function blankState(){
     days:{}, braindump:[], projects:[], cases:[], jobs:[],
     templates:{}, weeklyGoals:{}, streak:{count:0,lastDate:null},
     checklist:defaultChecklist(), library:[],
-    tombstones:{}, settings:{}, meta:{imports:[]}
+    tombstones:{}, stamps:{}, gcal:{}, gcalFrom:null, settings:{}, meta:{imports:[]}
   };
 }
 function normalize(s){
@@ -169,13 +169,26 @@ const EMPTY_DAY = Object.freeze({blocks:[], priorities:[], note:'', review:null}
 const dayRO = k => S.days[k] || EMPTY_DAY;
 const stamp = o => { o.updatedAt = now(); return o; };
 const tomb = id => { S.tombstones[id] = now(); };
+// fields without their own record (notes, goals, checklist…) carry a timestamp here, so sync knows which side is newer
+const touch = key => { S.stamps[key] = now(); };
+let reviveQ = [];
+const untomb = id => { delete S.tombstones[id]; reviveQ.push(id); };
+function findRecord(id){
+  for(const k of Object.keys(S.days)){
+    const d = S.days[k];
+    const r = d.blocks.find(x => x.id === id) || d.priorities.find(x => x.id === id);
+    if(r) return r;
+  }
+  for(const f of ['braindump','projects','cases','jobs']){ const r = S[f].find(x => x.id === id); if(r) return r; }
+  return null;
+}
 
 let S = loadState();
 function seedOnce(){
   if(S.meta.seededPlan) return;
   S.meta.seededPlan = true;
   if(!S.projects.some(p => p.name === 'Job Search Plan')){
-    S.projects.unshift(stamp({id:uid(), name:'Job Search Plan', color:'#2e7d5e', open:true, links:[], tasks:[
+    S.projects.unshift(stamp({id:'p_jobsearchplan', name:'Job Search Plan', color:'#2e7d5e', open:true, links:[], tasks:[
       {id:uid(), text:'Write my one-sentence non-negotiable for the next role', done:false},
       {id:uid(), text:'Build a precision target list of 10–20 companies against that filter', done:false},
       {id:uid(), text:'Identify the complement skill I bring to each target', done:false},
@@ -194,6 +207,7 @@ function commit(){
   S.updatedAt = now();
   clearTimeout(saveTimer);
   saveTimer = setTimeout(persist, 250);
+  scheduleSync();
 }
 function persist(){
   clearTimeout(saveTimer); saveTimer = null;
@@ -254,7 +268,10 @@ function pushUndo(label, restore){
 function undo(){
   const fn = undoStack.pop();
   if(!fn){ toast('Nothing to undo'); return; }
-  fn(); commit(); renderAll(); toast('Restored');
+  reviveQ = [];
+  fn();
+  reviveQ.forEach(id => { const r = findRecord(id); if(r) stamp(r); }); reviveQ = [];
+  commit(); renderAll(); toast('Restored');
 }
 
 // ════════════════════════════════════════════
@@ -373,8 +390,8 @@ function renderTemplates(){
     d.querySelector('[data-t=stamp]').onclick = () => applyTemplate(name, false);
     d.querySelector('[data-t=load]').onclick = () => applyTemplate(name, true);
     d.querySelector('[data-t=del]').onclick = () => {
-      const saved = S.templates[name]; delete S.templates[name]; commit(); renderTemplates();
-      pushUndo(`Template "${name}" deleted`, () => { S.templates[name] = saved; });
+      const saved = S.templates[name]; delete S.templates[name]; touch('tpl:' + name); commit(); renderTemplates();
+      pushUndo(`Template "${name}" deleted`, () => { S.templates[name] = saved; touch('tpl:' + name); });
     };
     el.appendChild(d);
   });
@@ -384,6 +401,7 @@ function saveTemplate(){
   if(!name){ toast('Give the template a name'); return; }
   const blocks = dayRO(curKey).blocks;
   if(!blocks.length){ toast('This day has no blocks to save'); return; }
+  touch('tpl:' + name);
   S.templates[name] = blocks.map(b => ({title:b.title, notes:b.notes||'', category:b.category, cal:b.cal||'auto', startMin:b.startMin, endMin:b.endMin}));
   inp.value = ''; commit(); renderTemplates(); toast(`Template "${name}" saved`);
 }
@@ -394,7 +412,7 @@ function applyTemplate(name, replace){
   if(replace){ d.blocks.forEach(b => tomb(b.id)); d.blocks = []; }
   S.templates[name].forEach(t => d.blocks.push(stamp({id:uid(), title:t.title, notes:t.notes||'', category:t.category, cal:t.cal||'auto', gcal:null, startMin:t.startMin, endMin:t.endMin})));
   selId = null; commit(); renderView(); renderRight(); closeSheets();
-  pushUndo(`"${name}" ${replace ? 'loaded' : 'stamped'} onto ${fmtDay(curKey)}`, () => { dayOf(S, curKey).blocks = before; before.forEach(b => delete S.tombstones[b.id]); });
+  pushUndo(`"${name}" ${replace ? 'loaded' : 'stamped'} onto ${fmtDay(curKey)}`, () => { dayOf(S, curKey).blocks = before; before.forEach(b => untomb(b.id)); });
 }
 
 // ════════════════════════════════════════════
@@ -636,8 +654,17 @@ function openBlockModal({dateKey=curKey, sMin, eMin, title='', link=null, cat:ca
   openModal('blockModal');
   if(!isPhone() || !title) setTimeout(() => { if($('blockModal').classList.contains('open')) $('nbTitle').focus(); }, 60);
 }
+function calStatusText(key, dateKey, target){
+  if(target === 'none') return 'Not added to Google Calendar';
+  const where = CAL_LABEL[target];
+  if(!conn) return `→ ${where} · connect Google in ⚙ Settings to sync`;
+  if(S.gcal && S.gcal[key]) return `→ ${where} · in Google Calendar ✓`;
+  if(S.gcalFrom && dateKey < S.gcalFrom) return `→ ${where} · before your sync start date, not added`;
+  return `→ ${where} · added on next sync`;
+}
 function updateNbCalHint(){
-  $('nbCalHint').textContent = '→ ' + CAL_LABEL[calTarget({cal:blockDraft.cal, category:blockDraft.cat})] + ' (sync arrives in Stage 3)';
+  const t = calTarget({cal:blockDraft.cal, category:blockDraft.cat});
+  $('nbCalHint').textContent = t === 'none' ? 'Not added to Google Calendar' : '→ ' + CAL_LABEL[t] + (conn ? '' : ' · connect Google in ⚙ Settings to sync');
 }
 function readTimes(sEl, eEl){
   const s = fromTS(sEl.value); let e = fromTS(eEl.value);
@@ -680,7 +707,7 @@ function deleteBlock(id){
   linkedPrios.forEach(p => { delete p.blockId; stamp(p); });
   if(selId === id) selId = null;
   commit(); renderView(); renderRight(); closeSheets();
-  pushUndo('Block deleted', () => { dayOf(S, k).blocks.splice(idx, 0, b); delete S.tombstones[id]; linkedPrios.forEach(p => p.blockId = id); });
+  pushUndo('Block deleted', () => { dayOf(S, k).blocks.splice(idx, 0, b); untomb(id); linkedPrios.forEach(p => p.blockId = id); });
 }
 function duplicateBlock(id){
   const f = findBlock(id); if(!f) return;
@@ -747,7 +774,7 @@ function renderEditor(){
       <button class="sec-btn" id="eDup">Duplicate</button>
       <button class="del-btn" id="eDel">Delete</button>
     </div>`;
-  const calHint = () => { $('eCalHint').textContent = '→ ' + CAL_LABEL[calTarget(b)]; };
+  const calHint = () => { $('eCalHint').textContent = calStatusText('b:' + b.id, f.k, calTarget(b)); };
   buildCatChips($('eCats'), b.category, c => { b.category = c; stamp(b); commit(); renderBlocks(); calHint(); renderStats(); });
   fillCalSelect($('eCal'), b.cal || 'auto'); calHint();
   $('eCal').onchange = e => { b.cal = e.target.value; stamp(b); commit(); renderBlocks(); calHint(); };
@@ -800,7 +827,7 @@ function registerActivity(){
   const tk = todayKey();
   if(S.streak.lastDate === tk) return;
   S.streak.count = S.streak.lastDate === addDays(tk, -1) ? S.streak.count + 1 : 1;
-  S.streak.lastDate = tk;
+  S.streak.lastDate = tk; touch('streak');
   commit(); renderStats();
   if(S.streak.count > 1) toast(`🔥 ${S.streak.count}-day streak — keep it going`);
 }
@@ -1001,7 +1028,7 @@ function renderPriorities(){
     d.querySelector('[data-x=up]').onclick = () => { if(i === 0) return; const arr = dayOf(S, curKey).priorities; [arr[i-1], arr[i]] = [arr[i], arr[i-1]]; stamp(p); commit(); renderPriorities(); };
     d.querySelector('[data-x=del]').onclick = () => {
       const arr = dayOf(S, curKey).priorities; arr.splice(i, 1); tomb(p.id); commit(); renderPriorities(); renderStats();
-      pushUndo('Priority removed', () => { dayOf(S, curKey).priorities.splice(i, 0, p); delete S.tombstones[p.id]; });
+      pushUndo('Priority removed', () => { dayOf(S, curKey).priorities.splice(i, 0, p); untomb(p.id); });
     };
     d.querySelector('.check').onclick = () => {
       p.done = !p.done; stamp(p); commit(); renderPriorities(); renderStats();
@@ -1065,7 +1092,7 @@ function renderBraindump(){
     };
     d.querySelector('[data-x=del]').onclick = () => {
       S.braindump.splice(i, 1); tomb(item.id); commit(); renderBraindump();
-      pushUndo('Removed', () => { S.braindump.splice(i, 0, item); delete S.tombstones[item.id]; });
+      pushUndo('Removed', () => { S.braindump.splice(i, 0, item); untomb(item.id); });
     };
     el.appendChild(d);
     requestAnimationFrame(grow);
@@ -1101,7 +1128,7 @@ function renderProjects(){
     d.querySelector('.project-toggle').onclick = () => { p.open = !p.open; commit(); renderProjects(); };
     d.querySelector('[data-x=pdel]').onclick = () => {
       S.projects.splice(pi, 1); tomb(p.id); commit(); renderProjects();
-      pushUndo(`Project "${p.name}" deleted`, () => { S.projects.splice(pi, 0, p); delete S.tombstones[p.id]; });
+      pushUndo(`Project "${p.name}" deleted`, () => { S.projects.splice(pi, 0, p); untomb(p.id); });
     };
     if(p.open){
       const cr = d.querySelector('.project-color-row');
@@ -1223,7 +1250,7 @@ function renderChecklist(){
   body.querySelectorAll('.cl-item').forEach(row => {
     const it = items.find(x => x.id === row.dataset.cl);
     const toggle = () => {
-      const w = S.checklist.weeks[mon] = S.checklist.weeks[mon] || {};
+      const w = S.checklist.weeks[mon] = S.checklist.weeks[mon] || {}; touch('clw:' + mon);
       if(w[it.id]) delete w[it.id]; else w[it.id] = true;
       if(!Object.keys(w).length) delete S.checklist.weeks[mon];
       commit(); renderChecklist();
@@ -1234,8 +1261,8 @@ function renderChecklist(){
     if(sc) sc.onclick = () => openBlockModal({dateKey:curKey, title:it.text, link:{type:'checklist', id:it.id}, cat:'jobs'});
     const del = row.querySelector('[data-x=cl-del]');
     if(del) del.onclick = () => {
-      const i = items.indexOf(it); items.splice(i, 1); commit(); renderChecklist();
-      pushUndo('Checklist item removed', () => { S.checklist.items.splice(i, 0, it); });
+      const i = items.indexOf(it); items.splice(i, 1); touch('cli'); commit(); renderChecklist();
+      pushUndo('Checklist item removed', () => { S.checklist.items.splice(i, 0, it); touch('cli'); });
     };
   });
   const add = body.querySelector('[data-x=cl-add]');
@@ -1244,14 +1271,14 @@ function renderChecklist(){
       const text = $('clNewText').value.trim(); if(!text) return;
       let g = $('clNewGroup').value;
       if(g === '__new'){ g = (prompt('Name of the new group?', '') || '').trim(); if(!g) return; }
-      items.push({id:uid(), group:g, text, where:$('clNewWhere').value.trim()});
+      items.push({id:uid(), group:g, text, where:$('clNewWhere').value.trim()}); touch('cli');
       commit(); renderChecklist(); setTimeout(() => { const t = $('clNewText'); if(t) t.focus(); }, 0);
     };
     add.onclick = doAdd;
     $('clNewText').addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); doAdd(); } });
     body.querySelector('[data-x=cl-reset]').onclick = () => {
       if(!confirm('Replace your checklist items with the 12 from the Job Search Plan? Your ticks for the default items are kept.')) return;
-      S.checklist.items = defaultChecklist().items; commit(); renderChecklist();
+      S.checklist.items = defaultChecklist().items; touch('cli'); commit(); renderChecklist();
     };
   }
 }
@@ -1269,7 +1296,7 @@ function renderLibrary(){
     : '<div class="library-empty">Pin the files you open most — your current CV, the day-before cheat sheet, your story bible. Tap <b>Edit</b> and paste their links.</div>';
 }
 function toggleLibraryEdit(){
-  if(libEditing){ S.library = parseLinks($('libText').value); commit(); }
+  if(libEditing){ S.library = parseLinks($('libText').value); touch('lib'); commit(); }
   libEditing = !libEditing; renderLibrary();
   if(libEditing) setTimeout(() => $('libText').focus(), 0);
 }
@@ -1316,7 +1343,7 @@ function confirmCase(){
 function deleteCase(id){
   const i = S.cases.findIndex(x => x.id === id); if(i < 0) return;
   const c = S.cases[i]; S.cases.splice(i, 1); tomb(id); commit(); renderCases();
-  pushUndo('Removed from Reading List', () => { S.cases.splice(i, 0, c); delete S.tombstones[id]; });
+  pushUndo('Removed from Reading List', () => { S.cases.splice(i, 0, c); untomb(id); });
 }
 
 // ════════════════════════════════════════════
@@ -1394,7 +1421,7 @@ function confirmJob(){
 function deleteJob(id){
   const i = S.jobs.findIndex(x => x.id === id); if(i < 0) return;
   const j = S.jobs[i]; S.jobs.splice(i, 1); tomb(id); commit(); renderJobs();
-  pushUndo('Role removed', () => { S.jobs.splice(i, 0, j); delete S.tombstones[id]; });
+  pushUndo('Role removed', () => { S.jobs.splice(i, 0, j); untomb(id); });
 }
 
 // ════════════════════════════════════════════
@@ -1448,7 +1475,7 @@ function saveReviewDraft(){
   // review text is kept as you type, so switching tabs or days never loses it
   const d = dayOf(S, curKey); const r = d.review || {};
   REVIEW_FIELDS.forEach(([id,k]) => r[k] = $(id).value);
-  d.review = r; commit();
+  d.review = r; touch('review:' + curKey); commit();
 }
 function saveReview(){
   saveReviewDraft();
@@ -1463,7 +1490,7 @@ function saveReview(){
     nd.priorities.push(stamp({id:uid(), text:p.text, done:false, from:curKey})); moved++;
   });
   if(r.carryNotes && r.carryNotes.trim() && !nd.note.includes(r.carryNotes.trim())){
-    nd.note = (nd.note ? nd.note + '\n\n' : '') + 'From review: ' + r.carryNotes.trim();
+    nd.note = (nd.note ? nd.note + '\n\n' : '') + 'From review: ' + r.carryNotes.trim(); touch('note:' + next);
   }
   carrySel.clear();
   commit(); renderReview(); renderBadge();
@@ -1679,13 +1706,14 @@ function detectV1InBrowser(){
   try { const r = convertV1(map, 'Found TimeBox 1 data saved in this browser.'); if(hasData(r.state)) showImport(r); } catch(e){ console.error(e); }
 }
 function renderSettings(){
+  renderConnSettings();
   let bytes = 0; try { bytes = (localStorage.getItem(STORE_KEY) || '').length; } catch(e){}
   const s = summarize(S);
   $('storageInfo').innerHTML = `${(bytes/1024).toFixed(0)} KB used on this device · ${s[1][1]} blocks across ${s[0][1]} days, ${S.cases.length} reading-list items, ${S.jobs.length} roles.<br>
-    <span class="field-hint">Data lives only on this device until Drive sync (Stage 3). Export a backup now and then.</span>`;
+    <span class="field-hint">${conn ? 'This device syncs with your Google Drive. Exporting a backup now and then is still wise.' : 'Data lives only on this device. Connect Google above to sync it, or export a backup now and then.'}</span>`;
   let snap = null; try { snap = JSON.parse(localStorage.getItem(SNAP_KEY)); } catch(e){}
   const ub = $('undoImportBtn');
-  if(snap){ ub.hidden = false; ub.textContent = `Undo last import (restore data from ${new Date(snap.takenAt).toLocaleString('en-GB', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'})})`; }
+  if(snap){ ub.hidden = false; ub.textContent = `Restore this device's snapshot (data from ${new Date(snap.takenAt).toLocaleString('en-GB', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'})})`; }
   else ub.hidden = true;
   const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
   $('aboutInfo').innerHTML = `TimeBox ${APP_VERSION}${standalone ? ' · running as installed app' : ''}<br><span class="field-hint">${(S.meta.imports || []).length ? 'Last import: ' + esc(S.meta.imports[S.meta.imports.length-1].source) + ' on ' + new Date(S.meta.imports[S.meta.imports.length-1].at).toLocaleDateString('en-GB') : 'No imports yet.'}</span>`;
@@ -1767,6 +1795,12 @@ function setupEvents(){
       case 'import-replace': if(confirm('Replace ALL current TimeBox 2 data with this backup? (A snapshot is kept so you can undo.)')) applyImport('replace'); break;
       case 'undo-import': undoImport(); break;
       case 'settings': renderSettings(); openModal('settingsModal'); break;
+      case 'g-connect': connectGoogle(); break;
+      case 'g-cloud': finishConnect('cloud'); break;
+      case 'g-merge': finishConnect('merge'); break;
+      case 'g-sync': syncNow('manual'); break;
+      case 'g-disconnect': disconnectGoogle(); break;
+      case 'sync-status': renderSettings(); openModal('settingsModal'); if(conn) syncNow('manual'); break;
     }
   });
   $('importFile').addEventListener('change', e => { const f = e.target.files[0]; if(f) readImportFile(f); e.target.value = ''; });
@@ -1782,8 +1816,8 @@ function setupEvents(){
     S.braindump.push(stamp({id:uid(), text:v})); e.target.value = ''; commit(); renderBraindump();
   });
   $('templateNameInput').addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); saveTemplate(); } });
-  $('weeklyGoal').addEventListener('input', e => { S.weeklyGoals[mondayOf(curKey)] = e.target.value; commit(); });
-  $('dailyNote').addEventListener('input', e => { dayOf(S, curKey).note = e.target.value; commit(); });
+  $('weeklyGoal').addEventListener('input', e => { S.weeklyGoals[mondayOf(curKey)] = e.target.value; touch('goal:' + mondayOf(curKey)); commit(); });
+  $('dailyNote').addEventListener('input', e => { dayOf(S, curKey).note = e.target.value; touch('note:' + curKey); commit(); });
   $('caseSearch').addEventListener('input', e => { caseQuery = e.target.value; renderCases(); });
   REVIEW_FIELDS.forEach(([id]) => $(id).addEventListener('input', saveReviewDraft));
   $('nbTitle').addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); confirmBlock(); } });
@@ -1827,6 +1861,240 @@ function setupEvents(){
 }
 
 // ════════════════════════════════════════════
+// GOOGLE SYNC (Drive data + Calendar, through your own Apps Script)
+// ════════════════════════════════════════════
+const CONN_KEY = 'tb2_conn';
+let conn = null;                 // {url, key, account, lastSync, lastRev, syncedAt, events}
+try { conn = JSON.parse(localStorage.getItem(CONN_KEY)) || null; } catch(e){ conn = null; }
+const saveConn = () => { try { conn ? localStorage.setItem(CONN_KEY, JSON.stringify(conn)) : localStorage.removeItem(CONN_KEY); } catch(e){} };
+let syncing = false, syncAgain = false, syncTimer = null, syncState = 'idle', syncMsg = '', pendingRender = false;
+
+async function api(action, payload = {}, c = conn){
+  const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 45000);
+  try {
+    // text/plain keeps this a "simple" request, which Apps Script accepts from any web page
+    const res = await fetch(c.url, {method:'POST', body:JSON.stringify({key:c.key, action, ...payload}), redirect:'follow', signal:ctl.signal});
+    const txt = await res.text();
+    let j; try { j = JSON.parse(txt); } catch(e){ throw Object.assign(new Error('The URL did not answer like TimeBox Sync. Check you copied the Web app URL (ending in /exec).'), {kind:'url'}); }
+    if(j.error) throw Object.assign(new Error(j.message || j.error), {kind:j.error});
+    return j;
+  } catch(e){
+    if(e.name === 'AbortError') throw Object.assign(new Error('Google took too long to answer.'), {kind:'offline'});
+    if(e instanceof TypeError) throw Object.assign(new Error('No connection to Google.'), {kind:'offline'});
+    throw e;
+  } finally { clearTimeout(t); }
+}
+
+// ── merge two copies of the data: per record, the newest edit wins; deletions stick ──
+function mergeRecs(a = [], b = [], tombs){
+  const out = [], idx = new Map();
+  a.forEach(r => { idx.set(r.id, out.length); out.push(r); });
+  b.forEach(r => {
+    if(!idx.has(r.id)){ idx.set(r.id, out.length); out.push(r); return; }
+    const i = idx.get(r.id); if((r.updatedAt || 0) > (out[i].updatedAt || 0)) out[i] = r;
+  });
+  return out.filter(r => !(tombs[r.id] && tombs[r.id] >= (r.updatedAt || 0)));
+}
+function syncMerge(A, B){
+  const out = clone(A);
+  const sa = A.stamps || {}, sb = B.stamps || {};
+  const pick = (key, av, bv) => (sb[key] || 0) > (sa[key] || 0) ? bv : (av === undefined || av === null || av === '' ? (bv ?? av) : av);
+  const tombs = {...(B.tombstones || {})};
+  Object.entries(A.tombstones || {}).forEach(([k, v]) => { tombs[k] = Math.max(v, tombs[k] || 0); });
+  out.tombstones = tombs;
+  const stamps = {...sb}; Object.entries(sa).forEach(([k, v]) => { stamps[k] = Math.max(v, stamps[k] || 0); }); out.stamps = stamps;
+  const days = new Set([...Object.keys(A.days || {}), ...Object.keys(B.days || {})]);
+  out.days = {};
+  days.forEach(k => {
+    const a = (A.days || {})[k] || {}, b = (B.days || {})[k] || {};
+    out.days[k] = {
+      blocks: clone(mergeRecs(a.blocks, b.blocks, tombs)),
+      priorities: clone(mergeRecs(a.priorities, b.priorities, tombs)),
+      note: pick('note:' + k, a.note, b.note) || '',
+      review: clone(pick('review:' + k, a.review, b.review) || null),
+    };
+  });
+  ['braindump','projects','cases','jobs'].forEach(f => { out[f] = clone(mergeRecs(A[f], B[f], tombs)); });
+  out.templates = {};
+  new Set([...Object.keys(A.templates || {}), ...Object.keys(B.templates || {})]).forEach(n => {
+    const v = pick('tpl:' + n, (A.templates || {})[n], (B.templates || {})[n]); if(v) out.templates[n] = clone(v);
+  });
+  out.weeklyGoals = {};
+  new Set([...Object.keys(A.weeklyGoals || {}), ...Object.keys(B.weeklyGoals || {})]).forEach(m => {
+    const v = pick('goal:' + m, (A.weeklyGoals || {})[m], (B.weeklyGoals || {})[m]); if(v) out.weeklyGoals[m] = v;
+  });
+  const ca = A.checklist || defaultChecklist(), cb = B.checklist || defaultChecklist();
+  out.checklist = {items: clone(pick('cli', ca.items, cb.items)), weeks: {}};
+  new Set([...Object.keys(ca.weeks || {}), ...Object.keys(cb.weeks || {})]).forEach(m => {
+    const v = pick('clw:' + m, (ca.weeks || {})[m], (cb.weeks || {})[m]); if(v && Object.keys(v).length) out.checklist.weeks[m] = clone(v);
+  });
+  out.library = clone(pick('lib', A.library, B.library) || []);
+  out.streak = clone(pick('streak', A.streak, B.streak) || {count:0, lastDate:null});
+  out.gcal = clone(B.gcal || A.gcal || {});
+  out.gcalFrom = B.gcalFrom || A.gcalFrom || null;
+  out.meta = {...(B.meta || {}), ...(A.meta || {}), seededPlan: !!((A.meta || {}).seededPlan || (B.meta || {}).seededPlan)};
+  out.updatedAt = A.updatedAt;
+  return normalize(out);
+}
+
+// ── roles sent from the Career Suite ──
+function takeInbox(st, items){
+  const ids = [];
+  (items || []).forEach(it => {
+    ids.push(it.id);
+    const j = it.job || {};
+    if(j.url && st.jobs.some(x => x.postingUrl === j.url)) return;
+    st.jobs.push(stamp({id:uid(), company:j.company || 'Company', role:j.role || '', status:'to-apply', deadline:'', interviewAt:'', interviewDur:60,
+      followUp:'', nextAction:'Decide whether to apply', notes:[j.location, j.notes].filter(Boolean).join('\n'),
+      postingUrl:/^https?:\/\//i.test(j.url || '') ? j.url : '', source:j.source || 'Career Suite', links:[]}));
+  });
+  return ids;
+}
+
+function setSync(state, msg){
+  syncState = state; syncMsg = msg || '';
+  const el = $('syncDot');
+  if(el){
+    el.hidden = !conn;
+    el.dataset.state = state;
+    el.title = {ok:'Synced with Google', syncing:'Syncing…', offline:'Offline — changes are saved on this device and sync when you are back online', error:'Sync problem — tap for details', idle:'Google sync'}[state] + (msg ? ' · ' + msg : '');
+  }
+  if($('settingsModal').classList.contains('open')) renderConnSettings();
+}
+function scheduleSync(delay = 4000){
+  if(!conn) return;
+  clearTimeout(syncTimer); syncTimer = setTimeout(() => syncNow('change'), delay);
+}
+const busyTyping = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && !a.closest('.modal-overlay'); };
+function refreshAfterSync(){
+  if(busyTyping() || openModals().length){ pendingRender = true; return; }
+  pendingRender = false; renderAll();
+}
+
+async function syncNow(reason){
+  if(!conn) return;
+  if(syncing){ syncAgain = true; return; }
+  if(saveTimer) persist();
+  syncing = true; setSync('syncing');
+  const startedAt = now();
+  try {
+    for(let attempt = 0; attempt < 4; attempt++){
+      const p = await api('pull');
+      const remote = p.state ? normalize(p.state) : null;
+      const localChanged = !conn.syncedAt || (S.updatedAt || 0) > conn.syncedAt;
+      const remoteChanged = p.rev !== conn.lastRev;
+      const inbox = p.inbox || [];
+      let merged = remote ? syncMerge(S, remote) : clone(S);
+      const ack = takeInbox(merged, inbox);
+      if(!merged.gcalFrom) merged.gcalFrom = todayKey();
+      let gcal = remote ? remote.gcal : S.gcal, rev = p.rev, cal = null, partial = false;
+      if(localChanged || ack.length || !remote || reason === 'manual'){
+        const r = await api('push', {state:merged, baseRev:p.rev, ackInbox:ack});
+        if(r.conflict) continue;                         // someone else saved in between: pull again
+        gcal = r.gcal; rev = r.rev; cal = r.cal; partial = r.partial; merged.gcalFrom = r.gcalFrom;
+      } else if(!remoteChanged){
+        conn.lastSync = now(); saveConn(); setSync('ok'); return;
+      }
+      // fold in anything typed while we were talking to Google
+      const before = JSON.stringify([S.days, S.jobs, S.projects, S.braindump, S.cases, S.checklist, S.weeklyGoals, S.library]);
+      S = syncMerge(S, merged); S.gcal = gcal || {}; S.gcalFrom = merged.gcalFrom;
+      persist();
+      conn.lastRev = rev; conn.syncedAt = startedAt; conn.lastSync = now(); conn.events = Object.keys(S.gcal).length; saveConn();
+      if(ack.length) toast(`${ack.length} role${ack.length > 1 ? 's' : ''} arrived from the Career Suite`);
+      if(cal && cal.errors) setSync('error', `${cal.errors} calendar item(s) could not be saved`); else setSync('ok');
+      const after = JSON.stringify([S.days, S.jobs, S.projects, S.braindump, S.cases, S.checklist, S.weeklyGoals, S.library]);
+      if(before !== after) refreshAfterSync(); else { renderEditor(); }
+      if(partial || (S.updatedAt || 0) > startedAt) syncAgain = true;
+      return;
+    }
+    throw new Error('Another device kept saving at the same moment — will retry.');
+  } catch(e){
+    console.warn('sync', e);
+    if(e.kind === 'bad-key') setSync('error', 'The key does not match');
+    else if(e.kind === 'offline') setSync('offline');
+    else setSync('error', e.message);
+  } finally {
+    syncing = false;
+    if(syncAgain){ syncAgain = false; scheduleSync(1500); }
+  }
+}
+
+// ── connect / disconnect ──
+let connectDraft = null;
+async function connectGoogle(){
+  const url = $('gUrl').value.trim(), key = $('gKey').value.trim();
+  if(!/^https:\/\/script\.google(usercontent)?\.com\/.+/.test(url) && !/^http:\/\/localhost/.test(url)){ toast('Paste the Web app URL from Apps Script (it starts with https://script.google.com/)'); return; }
+  if(key.length < 20){ toast('Paste the secret key from the Apps Script log'); return; }
+  const c = {url, key};
+  const btn = $('gConnectBtn'); btn.disabled = true; btn.textContent = 'Connecting…';
+  try {
+    const ping = await api('ping', {}, c);
+    const deviceTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if(ping.tz && deviceTz && ping.tz !== deviceTz) toast(`Note: the script's time zone is ${ping.tz}, this device uses ${deviceTz}. Set the script to your time zone (see setup steps).`);
+    c.account = ping.account || '';
+    const pulled = await api('pull', {}, c);
+    connectDraft = {c, pulled};
+    if(!pulled.state){ await finishConnect('upload'); return; }
+    if(!hasData(S)){ await finishConnect('cloud'); return; }
+    $('connChoice').hidden = false;
+    $('connChoiceInfo').textContent = `Your Google Drive already has TimeBox data (saved ${pulled.state.updatedAt ? new Date(pulled.state.updatedAt).toLocaleString('en-GB', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}) : 'earlier'}), and this device has data too.`;
+  } catch(e){
+    toast(e.kind === 'bad-key' ? 'That key does not match. Copy it again from the Apps Script log.' : e.kind === 'not-set-up' ? 'Run "setup" in the Apps Script editor first.' : e.message);
+  } finally { btn.disabled = false; btn.textContent = 'Connect'; }
+}
+async function finishConnect(mode){
+  if(!connectDraft) return;
+  const {c, pulled} = connectDraft; connectDraft = null;
+  try { localStorage.setItem(SNAP_KEY, JSON.stringify({takenAt:now(), state:S})); } catch(e){}
+  if(mode === 'cloud'){ S = normalize(pulled.state); seedOnce(); }
+  else if(mode === 'merge'){ S = syncMerge(S, normalize(pulled.state)); }
+  conn = {url:c.url, key:c.key, account:c.account, lastRev: mode === 'cloud' ? pulled.rev : -1, syncedAt: mode === 'cloud' ? now() : 0, lastSync:null};
+  saveConn(); persist();
+  if(mode === 'cloud' && pulled.rev) conn.lastRev = pulled.rev;
+  $('connChoice').hidden = true;
+  selId = null; renderAll(); renderConnSettings();
+  toast(mode === 'upload' ? 'Connected · uploading your data and adding events to Google Calendar…' : mode === 'cloud' ? 'Connected · this device now shows your cloud data' : 'Connected · merging both copies…');
+  await syncNow('manual');
+}
+function disconnectGoogle(){
+  if(!confirm('Disconnect this device from Google? Your data stays on this device and in your Drive; this device just stops syncing.')) return;
+  conn = null; saveConn(); setSync('idle'); renderConnSettings(); renderEditor();
+}
+function renderConnSettings(){
+  const box = $('connBody'); if(!box) return;
+  if(!conn){
+    box.innerHTML = `
+      <div class="settings-info" style="margin-bottom:8px">Sync this device with your Google Drive and put your blocks, interviews, deadlines and follow-ups in Google Calendar. Set up the TimeBox Sync script in your Google account first.</div>
+      <div class="field"><label>Web app URL</label><input class="input-full" id="gUrl" placeholder="https://script.google.com/macros/s/…/exec" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+      <div class="field"><label>Secret key</label><input class="input-full" id="gKey" placeholder="From the Apps Script log" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+      <button class="modal-confirm" id="gConnectBtn" data-act="g-connect" style="width:100%">Connect</button>
+      <div id="connChoice" hidden style="margin-top:10px">
+        <div class="settings-info" id="connChoiceInfo"></div>
+        <div class="settings-row" style="margin-top:8px;flex-direction:column">
+          <button class="modal-confirm" data-act="g-cloud">Use the cloud copy</button>
+          <button class="modal-cancel" data-act="g-merge">Merge both copies</button>
+        </div>
+        <div class="field-hint"><b>Use the cloud copy</b> if your other device is already connected (recommended). Either way, this device's data is kept as a snapshot you can restore under Backup.</div>
+      </div>`;
+    return;
+  }
+  const last = conn.lastSync ? new Date(conn.lastSync).toLocaleString('en-GB', {weekday:'short', hour:'2-digit', minute:'2-digit'}) : 'not yet';
+  const stateTxt = {ok:'✓ Synced', syncing:'Syncing…', offline:'Offline — will sync when back online', error:'⚠ ' + (syncMsg || 'Sync problem'), idle:'Connected'}[syncState];
+  box.innerHTML = `
+    <div class="conn-status" data-state="${syncState}"><span class="conn-dot"></span><div><b>${esc(stateTxt)}</b><div class="field-hint">${conn.account ? esc(conn.account) + ' · ' : ''}last sync ${esc(last)} · ${Object.keys(S.gcal || {}).length} items in Google Calendar${S.gcalFrom ? ` · calendar from ${esc(fmtDay(S.gcalFrom, {day:'numeric', month:'short'}))}` : ''}</div></div></div>
+    <div class="settings-row" style="margin-top:8px"><button class="modal-confirm" data-act="g-sync">Sync now</button><button class="modal-cancel" data-act="g-disconnect">Disconnect this device</button></div>
+    <div class="field-hint">Meetings and interviews go to your main calendar; everything else to the "TimeBox" calendar. Change a block's destination in its editor. Edit and delete in TimeBox — changes made in Google Calendar are overwritten.</div>`;
+}
+function initSync(){
+  setSync('idle');
+  if(conn) syncNow('boot');
+  document.addEventListener('visibilitychange', () => { if(!document.hidden) syncNow('focus'); });
+  window.addEventListener('online', () => syncNow('online'));
+  setInterval(() => { if(!document.hidden) syncNow('interval'); }, 120000);
+  document.addEventListener('focusout', () => { setTimeout(() => { if(pendingRender && !busyTyping() && !openModals().length) refreshAfterSync(); }, 50); });
+}
+
+// ════════════════════════════════════════════
 // BOOT
 // ════════════════════════════════════════════
 function boot(){
@@ -1850,6 +2118,7 @@ function boot(){
     const tk = todayKey(); if(tk !== lastDay){ if(curKey === lastDay) gotoDay(tk); lastDay = tk; }
   }, 30000);
   detectV1InBrowser();
+  initSync();
   if('serviceWorker' in navigator && location.protocol.startsWith('http')){
     navigator.serviceWorker.register('sw.js').catch(err => console.warn('SW registration failed', err));
   }
